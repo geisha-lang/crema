@@ -2,7 +2,7 @@
 
 Declarative **UI & 2D Game Stage Framework** for [Geisha](https://github.com/geisha-lang/geisha.gsa), compiling the **exact same pure `.gsa` source** to both **WebAssembly (`wasm32` + HTML5 Canvas2D)** and **Native macOS (`arm64` Cocoa + CoreGraphics Quartz 2D)**.
 
-## Architecture (`lib/kagura/`)
+## Architecture (`src/`)
 
 | Module | Responsibility |
 | --- | --- |
@@ -19,11 +19,22 @@ Declarative **UI & 2D Game Stage Framework** for [Geisha](https://github.com/gei
 
 ## Quick Start
 
-Link `kagura` into any Geisha project using `-L /path/to/kagura/lib`:
+Add `kagura` to any Geisha project via `geisha.toml`:
+
+```bash
+geisha add kagura
+# or explicitly:
+geisha add github.com/geisha-lang/kagura
+```
+
+Build and test this repository:
 
 ```bash
 # Run headless framework test suite + build wasm32 & native macOS Dojo showcase + native smoke test
 make test
+
+# Or run unit tests directly with Geisha
+geisha test
 
 # Run the native macOS Retina app directly
 ./build/kagura-dojo

@@ -1,4 +1,5 @@
 build/
+geisha.local.toml
 *.o
 *.ll
 *.wasm

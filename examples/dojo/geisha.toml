@@ -1,0 +1,6 @@
+name = "kagura_dojo"
+version = "0.1.0"
+entry = "app.gsa"
+
+[deps]
+kagura = { path = "../.." }
