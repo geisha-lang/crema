@@ -400,7 +400,43 @@ static void cg_add_round_rect(CGContextRef cg, CGRect r, CGFloat rad) {
                 break;
             }
             case 13: { CGContextRestoreGState(cg); w += 1; break; }
-            case 14: w += 6; break;
+            case 14: { // OP_IME_INPUT (10 words)
+                int32_t valIdx = i32[(w + 1) * 2];
+                int32_t phIdx  = i32[(w + 1) * 2 + 1];
+                NSString *val = (valIdx >= 0 && valIdx < (int32_t)g_strs.count) ? g_strs[(NSUInteger)valIdx] : @"";
+                NSString *ph  = (phIdx >= 0 && phIdx < (int32_t)g_strs.count) ? g_strs[(NSUInteger)phIdx] : @"";
+                CGFloat bx = f64[w + 2], by = f64[w + 3], bw = f64[w + 4], bh = f64[w + 5];
+                CGFloat padX = f64[w + 6], sz = f64[w + 7];
+                int32_t styleBits = i32[(w + 8) * 2];
+                NSColor *textCol = ns_color_from_rgba32(i32[(w + 8) * 2 + 1]) ?: [NSColor blackColor];
+                NSColor *phCol   = ns_color_from_rgba32(i32[(w + 9) * 2]) ?: [NSColor grayColor];
+                NSColor *carCol  = ns_color_from_rgba32(i32[(w + 9) * 2 + 1]) ?: textCol;
+                int32_t famCode = (styleBits >> 16) & 0xFF;
+                int32_t wtClass = styleBits & 0xFF;
+                NSFontWeight wt = wtClass >= 7 ? NSFontWeightBold : (wtClass >= 6 ? NSFontWeightSemibold : NSFontWeightRegular);
+                NSFont *font = (famCode == 1)
+                    ? ([NSFont fontWithName:@"Songti SC" size:sz] ?: [NSFont systemFontOfSize:sz weight:wt])
+                    : ((famCode == 2) ? [NSFont monospacedSystemFontOfSize:sz weight:wt] : [NSFont systemFontOfSize:sz weight:wt]);
+                CGFloat ix = bx + padX;
+                CGFloat iw = fmax(4.0, bw - padX * 2.0);
+                CGFloat ty = by + bh * 0.5 + sz * 0.36;
+                CGContextSaveGState(cg);
+                CGContextClipToRect(cg, CGRectMake(ix - 1.0, by + 2.0, iw + 2.0, bh - 4.0));
+                NSDictionary *valAttrs = @{NSFontAttributeName: font, NSForegroundColorAttributeName: textCol};
+                CGFloat prefixW = val.length > 0 ? [val sizeWithAttributes:valAttrs].width : 0.0;
+                CGFloat scrollX = prefixW > (iw - 4.0) ? (prefixW - (iw - 4.0)) : 0.0;
+                if (val.length == 0) {
+                    NSDictionary *phAttrs = @{NSFontAttributeName: font, NSForegroundColorAttributeName: phCol};
+                    [ph drawAtPoint:NSMakePoint(ix, ty - sz * 1.02) withAttributes:phAttrs];
+                } else {
+                    [val drawAtPoint:NSMakePoint(ix - scrollX, ty - sz * 1.02) withAttributes:valAttrs];
+                }
+                CGContextSetFillColorWithColor(cg, carCol.CGColor);
+                CGContextFillRect(cg, CGRectMake(ix + prefixW - scrollX + 1.0, by + (bh - sz * 1.18) * 0.5, 1.6, sz * 1.18));
+                CGContextRestoreGState(cg);
+                w += 10;
+                break;
+            }
             case 15: w += 1; break;
             case 16: { // OP_PUSH_CIRCLE_CLIP
                 CGFloat cx = f64[w + 1], cy = f64[w + 2], r = f64[w + 3];

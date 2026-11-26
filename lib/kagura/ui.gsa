@@ -1119,31 +1119,25 @@ def emitElement(
         let focused = strLen(inpId) > 0 && ctx.ufFocusedInput == inpId;
         let effSt = if (focused) border(1.6, focusBdCol)(st) else st;
         emitBoxBackground(dl, effSt, bounds);
-        let inner = rect(
-            bounds.rx + st.bsPadL,
-            bounds.ry + st.bsPadT,
-            bounds.rw - st.bsPadL - st.bsPadR,
-            bounds.rh - st.bsPadT - st.bsPadB
-        );
-        pushClip(dl, inner);
-        let ty = bounds.ry + bounds.rh * 0.5 + fn.fsSize * 0.36;
-        if (strLen(val) == 0) {
-            drawText(dl, inner.rx, ty, fn, AlignLeft, phCol, placeholder);
-            if (focused) {
-                drawFillRect(dl, rect(inner.rx, bounds.ry + (bounds.rh - fn.fsSize * 1.15) * 0.5, 1.6, fn.fsSize * 1.15), 0.5, focusBdCol)
-            } else ()
-        } else {
-            drawText(dl, inner.rx, ty, fn, AlignLeft, textCol, val);
-            if (focused) {
-                let cx = minFloat(inner.rx + inner.rw - 2.0, inner.rx + measureTextWidth(fn, val) + 1.5);
-                drawFillRect(dl, rect(cx, bounds.ry + (bounds.rh - fn.fsSize * 1.15) * 0.5, 1.6, fn.fsSize * 1.15), 0.5, focusBdCol)
-            } else ()
-        };
-        popClip(dl);
         if (focused) {
             cellSet(activeIme, Some((inpId, val, bounds)));
-            emitImeInput(dl, inpId, val, bounds)
-        } else ();
+            emitImeInput(dl, inpId, val, placeholder, bounds, st.bsPadL, fn, textCol, phCol, focusBdCol)
+        } else {
+            let inner = rect(
+                bounds.rx + st.bsPadL,
+                bounds.ry + st.bsPadT,
+                bounds.rw - st.bsPadL - st.bsPadR,
+                bounds.rh - st.bsPadT - st.bsPadB
+            );
+            pushClip(dl, inner);
+            let ty = bounds.ry + bounds.rh * 0.5 + fn.fsSize * 0.36;
+            if (strLen(val) == 0) {
+                drawText(dl, inner.rx, ty, fn, AlignLeft, phCol, placeholder)
+            } else {
+                drawText(dl, inner.rx, ty, fn, AlignLeft, textCol, val)
+            };
+            popClip(dl)
+        };
         pushClippedHit(hits, mClip, bounds, "input:" + inpId, "text", ActFocusInput(inpId, val, bounds, onInp, mSub))
     },
     ElCanvas(st, renderFn) -> {
