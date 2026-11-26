@@ -1,0 +1,251 @@
+// Kagura Headless Verification Suite (`tests/spec.gsa`):
+// Tests binary `DrawList` word encoding, RGBA & CJK typography metrics, Flexbox `Fixed`/`Grow` layout,
+// `ScrollView` viewport hitbox clipping, `Functor` message mapping, `Camera2D` inverse projection,
+// Hit-Stop time dilation, 2-Bone Analytic IK precision (< 1e-5), and dirty-driven TEA `Runtime`.
+
+use std.option.{Option, Some, None}
+use std.result.{Result, Ok, Err}
+use std.list.listLen
+use std.map.strMapNew
+use std.str.{intToStr, floatToStr}
+use std.control.fmap
+use sys.io.eprintLn
+use sys.proc.exit
+
+use kagura.gfx.{
+    Vec2, vec2, vDist, Rect, rect,
+    rgba, colorR, colorG, colorB, colorA, hexColor, lerpColor,
+    fontSans, measureTextWidth, wrapTextLines,
+    opClearBg, opRect, opPolygon, opText,
+    unpackLo32, unpackHi32,
+    drawListNew, dlClear, dlWordCount, dlStrCount, dlCmdCount, dlWordAt, dlFloatAt, dlStrAt,
+    drawClearBg, drawRect, drawPolygon, drawText, AlignCenter, absFloat
+}
+use kagura.ui.{
+    themeXuanPaper,
+    wFixed, hFixed, wGrow, hGrow, fillSpace, pad, gap,
+    Element, row, col, scrollView, paragraph, button,
+    UiHitAction, ActClick, UiFrameCtx, MkUiFrameCtx,
+    measureElement, renderUiRoot, hitTestUi
+}
+use kagura.stage.{
+    cameraNew, cameraPan, cameraZoomBy, worldToScreen, screenToWorld,
+    EaseLinear, EaseOutQuad, kf, sampleFloatTrack,
+    hitStop, visualTimeWithHitStops,
+    solveTwoBoneIk, sampleCatmullRom,
+    MkBurstConfig, spawnBurst2D, stepParticles2D
+}
+use kagura.app.{
+    Cmd, CmdNone, CmdEmit, cmdBatch, headlessHost,
+    basicUiApp, runtimeCreate, rtModel, rtStepFrame, rtPointerClick
+}
+
+def assertTrue(label: String, ok: Bool): Result Void String =
+    if (ok) Ok(()) else Err(label)
+
+def testGfxLayer(): Result Void String = {
+    let c = hexColor("#275247");
+    assertTrue("hexColor R", colorR(c) == 39)?;
+    assertTrue("hexColor G", colorG(c) == 82)?;
+    assertTrue("hexColor B", colorB(c) == 71)?;
+    assertTrue("hexColor A", colorA(c) == 255)?;
+
+    let mid = lerpColor(rgba(0, 100, 200, 255), rgba(100, 200, 0, 55), 0.5);
+    assertTrue("lerpColor channels", colorR(mid) == 50 && colorG(mid) == 150 && colorB(mid) == 100 && colorA(mid) == 155)?;
+
+    let fn = fontSans(14.0, 500);
+    assertTrue("CJK wider than ASCII", measureTextWidth(fn, "江湖") > measureTextWidth(fn, "ab"))?;
+    let wrapped = wrapTextLines(fn, 75.0, "春水碧于天画船听雨眠垆边人似月皓腕凝霜雪");
+    assertTrue("CJK paragraph wraps into >= 4 lines", listLen(wrapped) >= 4)?;
+
+    let dl = drawListNew();
+    drawClearBg(dl, c, c, c, true, true);
+    drawRect(dl, rect(12.5, 24.0, 180.0, 42.0), 4.0, c, 0, 0.0);
+    drawPolygon(dl, [vec2(0.0, 0.0), vec2(10.0, 0.0), vec2(5.0, 8.0)], c, 0, 0.0);
+    drawText(dl, 50.0, 30.0, fn, AlignCenter, c, "神楽");
+
+    assertTrue("DrawList command count == 4", dlCmdCount(dl) == 4)?;
+    assertTrue("DrawList string count == 1", dlStrCount(dl) == 1 && dlStrAt(dl, 0) == "神楽")?;
+    let h0 = dlWordAt(dl, 0);
+    assertTrue("op 0 is OP_CLEAR_BG with flags=3", unpackLo32(h0) == opClearBg() && unpackHi32(h0) == 3)?;
+    let h1 = dlWordAt(dl, 3);
+    assertTrue("op 1 is OP_RECT at x=12.5, w=180", unpackLo32(h1) == opRect() && dlFloatAt(dl, 4) == 12.5 && dlFloatAt(dl, 6) == 180.0)?;
+    let h2 = dlWordAt(dl, 14);
+    assertTrue("op 2 is OP_POLYGON with 3 vertices", unpackLo32(h2) == opPolygon() && unpackHi32(h2) == 3)?;
+    let h3 = dlWordAt(dl, 23);
+    assertTrue("op 3 is OP_TEXT strIdx=0", unpackLo32(h3) == opText() && unpackHi32(h3) == 0)?;
+    assertTrue("total word count == 28", dlWordCount(dl) == 28)?;
+
+    dlClear(dl);
+    assertTrue("dlClear resets counts", dlWordCount(dl) == 0 && dlStrCount(dl) == 0 && dlCmdCount(dl) == 0)?;
+    printLn("  [PASS] kagura.gfx: RGBA algebra, CJK wrapping & 8-byte binary DrawList");
+    Ok(())
+}
+
+data SubMsg { SubClicked(Int) }
+data RootMsg { WrappedSub(SubMsg), TopClicked }
+
+def testUiLayoutAndFunctor(): Result Void String = {
+    let th = themeXuanPaper();
+    // 800px wide row, pad 10 (innerW = 780), gap 20:
+    // Fixed(160) + Grow(1) + Grow(2) -> remW = 780 - 160 - 40 = 580 -> Grow(1)=193.33, Grow(2)=386.67
+    let subView: Element SubMsg = row([wGrow(1.0), hFixed(40.0)], [
+        button(th, "sub-btn", "子按钮", Some(SubClicked(7)))
+    ]);
+    let tree: Element RootMsg = row([wFixed(800.0), hFixed(120.0), pad(10.0), gap(20.0)], [
+        button(th, "left-fixed", "左固定", Some(TopClicked)),
+        fmap(WrappedSub, subView),
+        scrollView("test-scroll", [wGrow(2.0), hFixed(80.0)],
+            col([wGrow(1.0), gap(10.0)], [
+                button(th, "vis-btn", "可见项", Some(TopClicked)),
+                paragraph(fontSans(14.0, 400), 20.0, th.thInk, "占高段落一\n占高段落二\n占高段落三\n占高段落四\n占高段落五"),
+                button(th, "clipped-btn", "裁剪区外按钮", Some(TopClicked))
+            ])
+        )
+    ]);
+
+    let (mw, mh) = measureElement(tree, 800.0, 120.0);
+    assertTrue("root measured 800x120", mw == 800.0 && mh == 120.0)?;
+
+    let dl = drawListNew();
+    let fctx = MkUiFrameCtx {
+        ufViewport: rect(0.0, 0.0, 800.0, 120.0),
+        ufPointer: vec2(0.0, 0.0),
+        ufPointerDown: false,
+        ufHoveredKey: "",
+        ufFocusedInput: "",
+        ufScrolls: strMapNew(),
+    };
+    let out = renderUiRoot(tree, fctx, dl);
+    assertTrue("recorded 1 scroll zone with positive maxScroll", listLen(out.urScrolls) == 1)?;
+
+    // Click inside mapped Functor child button -> produces WrappedSub(SubClicked(7))!
+    let hitSub = hitTestUi(out.urHits, 130.0, 26.0);
+    let subOk = match hitSub {
+        Some(hb) -> match hb.phAction {
+            ActClick(WrappedSub(SubClicked(7))) -> true,
+            _ -> false,
+        },
+        None -> false,
+    };
+    assertTrue("Functor.fmap routes child button hitbox to WrappedSub(SubClicked(7))", subOk)?;
+
+    // Off-viewport button inside ScrollView (below y=90) must be clipped from hitboxes!
+    let hasClippedBtn = {
+        let cur = cellNew(out.urHits);
+        let found = cellNew(false);
+        while (match cellGet(cur) { Nil -> false, _ -> true }) {
+            match cellGet(cur) {
+                Cons(hb, r) -> {
+                    if (hb.phKey == "clipped-btn") cellSet(found, true) else ();
+                    cellSet(cur, r)
+                },
+                Nil -> (),
+            }
+        };
+        cellGet(found)
+    };
+    assertTrue("scrolled-out child button is clipped from hit testing", !hasClippedBtn)?;
+    printLn("  [PASS] kagura.ui: Flexbox Grow/Fixed layout, ScrollView hitbox clipping & Functor.fmap");
+    Ok(())
+}
+
+def testStageLayer(): Result Void String = {
+    let vp = rect(20.0, 30.0, 960.0, 540.0);
+    let cam = cameraZoomBy(cameraPan(cameraNew(0.0, 0.0, 1.0), 45.0, -30.0), 1.35);
+    let wPt = vec2(-128.5, 74.25);
+    let sPt = worldToScreen(cam, vp, wPt, false);
+    let back = screenToWorld(cam, vp, sPt, false);
+    assertTrue("Camera2D world<->screen round-trip < 1e-6", vDist(wPt, back) < 0.000001)?;
+
+    // Hit-stop window [100ms .. +60ms] freezes visual time at 100ms, then shifts by -60ms
+    let (vtMid, frozenMid) = visualTimeWithHitStops([hitStop(100.0, 60.0)], 135.0);
+    let (vtAfter, frozenAfter) = visualTimeWithHitStops([hitStop(100.0, 60.0)], 200.0);
+    assertTrue("HitStop freezes inside window", frozenMid && absFloat(vtMid - 100.0) < 0.0001)?;
+    assertTrue("HitStop shifts cleanly after window", !frozenAfter && absFloat(vtAfter - 140.0) < 0.0001)?;
+
+    // Keyframe track interpolation
+    let trk = [kf(0.0, 10.0, EaseLinear), kf(100.0, 30.0, EaseLinear), kf(200.0, 110.0, EaseOutQuad)];
+    assertTrue("Keyframe midpoint", absFloat(sampleFloatTrack(trk, 50.0, 0.0) - 20.0) < 0.0001)?;
+
+    // 2-Bone Analytic IK exact contact (< 1e-5) for reachable target
+    let origin = vec2(10.0, -20.0);
+    let target = vec2(78.0, 14.0);
+    let (joint, endPt) = solveTwoBoneIk(origin, target, 45.0, 50.0, 1.0);
+    assertTrue("2-Bone IK upper bone length == 45", absFloat(vDist(origin, joint) - 45.0) < 0.0001)?;
+    assertTrue("2-Bone IK lower bone length == 50", absFloat(vDist(joint, endPt) - 50.0) < 0.0001)?;
+    assertTrue("2-Bone IK end effector lands on target (< 1e-5)", vDist(endPt, target) < 0.00001)?;
+
+    // Curves & particles
+    let spline = sampleCatmullRom([vec2(0.0, 0.0), vec2(10.0, 20.0), vec2(30.0, 10.0), vec2(50.0, 30.0)], 4);
+    assertTrue("Catmull-Rom subdivides 3 segments * 4 + 1 == 13 pts", listLen(spline) == 13)?;
+
+    let burst = spawnBurst2D(MkBurstConfig {
+        bcOrigin: vec2(0.0, 0.0), bcCount: 16, bcBaseAngleRad: 0.0, bcSpreadRad: 1.0,
+        bcMinSpeed: 50.0, bcMaxSpeed: 100.0, bcMinRadius: 2.0, bcMaxRadius: 4.0,
+        bcLifeSec: 0.4, bcDrag: 1.0, bcGravity: 100.0, bcColor: hexColor("#9e2a22"), bcSeed: 7,
+    });
+    assertTrue("spawnBurst2D count == 16", listLen(burst) == 16)?;
+    let decayed = stepParticles2D(stepParticles2D(stepParticles2D(stepParticles2D(stepParticles2D(stepParticles2D(burst, 0.1), 0.1), 0.1), 0.1), 0.1), 0.1);
+    assertTrue("particles expire cleanly after lifetime", listLen(decayed) == 0)?;
+    printLn("  [PASS] kagura.stage: Camera2D inverse, Hit-Stop clock, 2-Bone IK (< 1e-5) & particles");
+    Ok(())
+}
+
+data CounterAppMsg {
+    Bump(Int),
+    DoubleBump,
+}
+
+def testDirtyDrivenAppRuntime(): Result Void String = {
+    let th = themeXuanPaper();
+    let cfg = basicUiApp(
+        th,
+        (_vp) -> (10, CmdNone),
+        (m, count) -> match m {
+            Bump(d) -> (count + d, CmdNone),
+            DoubleBump -> (count, cmdBatch([CmdEmit(Bump(3)), CmdEmit(Bump(4))])),
+        },
+        (_vp, count) -> col([fillSpace(), pad(20.0)], [
+            button(th, "btn-double", "Count=" + intToStr(count), Some(DoubleBump))
+        ])
+    );
+
+    let rt = runtimeCreate(cfg, 640.0, 480.0, headlessHost());
+    let rendered1 = rtStepFrame(rt, 16.6, 640.0, 480.0);
+    assertTrue("Frame 1 renders initial dirty state", rendered1)?;
+
+    // Idle frame in pure-UI mode (`appTick: None`) skips layout & rendering completely!
+    let rendered2 = rtStepFrame(rt, 16.6, 640.0, 480.0);
+    assertTrue("Frame 2 skips work when idle (0% idle redraw)", !rendered2)?;
+
+    // Click button at (45, 35) -> triggers DoubleBump -> CmdBatch([Bump(3), Bump(4)]) -> model becomes 17!
+    rtPointerClick(rt, 45.0, 35.0);
+    assertTrue("Click dispatched CmdBatch -> model == 17", rtModel(rt) == 17)?;
+
+    let rendered3 = rtStepFrame(rt, 16.6, 640.0, 480.0);
+    assertTrue("Frame 3 redraws after state mutation", rendered3)?;
+    let rendered4 = rtStepFrame(rt, 16.6, 640.0, 480.0);
+    assertTrue("Frame 4 returns to idle zero-redraw state", !rendered4)?;
+
+    printLn("  [PASS] kagura.app: dirty-driven zero-idle TEA loop, hit-dispatch & CmdBatch");
+    Ok(())
+}
+
+def runAll(): Result Void String = {
+    printLn("Running Kagura framework verification suite...");
+    testGfxLayer()?;
+    testUiLayoutAndFunctor()?;
+    testStageLayer()?;
+    testDirtyDrivenAppRuntime()?;
+    printLn("All Kagura framework unit & layout suites passed!");
+    Ok(())
+}
+
+def main(): Void = match runAll() {
+    Ok(_) -> (),
+    Err(msg) -> {
+        eprintLn("✗ KAGURA TEST FAILED: " + msg);
+        exit(1)
+    },
+}

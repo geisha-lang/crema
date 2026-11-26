@@ -1,0 +1,1282 @@
+// Kagura Layer 1 (`kagura.ui`):
+// Clay-inspired declarative Flexbox / ZStack / ScrollView layout engine,
+// `Functor Element` component composition, CJK paragraph wrapping, and automatic hitbox/IME collection.
+
+use std.option.{Option, Some, None}
+use std.list.{listLen, listRev, listAppend, listMap}
+use std.vec.{Vec, vecNew, vecPush, vecToList}
+use std.map.{StrMap, strMapGet}
+use std.control.{Functor, fmap}
+use kagura.gfx.{
+    Vec2, vec2, Rect, MkRect, rect, rectContains, rectIntersect,
+    Color, rgba, rgb, hexColor, withAlpha,
+    FontFamily, FontSans, FontSerif,
+    TextAlign, AlignLeft, AlignCenter, AlignRight,
+    FontSpec, fontSans, fontSerif, fontMono,
+    measureTextWidth, truncateWithEllipsis, wrapTextLines,
+    DrawList, drawCard, drawRect, drawFillRect, drawProgressBar,
+    drawText, drawImage, pushClip, popClip, emitImeInput
+}
+use kagura.gfx.{minFloat, maxFloat, clampFloat, clamp01}
+
+// ============================================================================
+// 1. Sizing, Alignment, Theme & Composable `StyleMod` Modifiers
+// ============================================================================
+
+pub data AxisSize {
+    SizeFit,
+    SizeFixed(Float),
+    SizeGrow(Float),
+    SizePercent(Float),
+}
+
+pub data AlignItems {
+    AlignStart,
+    AlignMid,
+    AlignEnd,
+    AlignStretch,
+}
+
+pub data BoxStyle {
+    MkBoxStyle {
+        bsWidth: AxisSize,
+        bsHeight: AxisSize,
+        bsMinW: Float,
+        bsMinH: Float,
+        bsMaxW: Float,
+        bsMaxH: Float,
+        bsPadT: Float,
+        bsPadR: Float,
+        bsPadB: Float,
+        bsPadL: Float,
+        bsGap: Float,
+        bsAlignX: AlignItems,
+        bsAlignY: AlignItems,
+        bsFillTop: Color,
+        bsFillBot: Color,
+        bsBorderCol: Color,
+        bsBorderW: Float,
+        bsRadius: Float,
+        bsShadowCol: Color,
+        bsShadowY: Float,
+        bsShadowBlur: Float,
+        bsDoubleBorder: Bool,
+        bsClip: Bool,
+    },
+}
+
+pub type StyleMod = BoxStyle -> BoxStyle
+
+pub def defaultBoxStyle(): BoxStyle = MkBoxStyle {
+    bsWidth: SizeFit,
+    bsHeight: SizeFit,
+    bsMinW: 0.0,
+    bsMinH: 0.0,
+    bsMaxW: 999999.0,
+    bsMaxH: 999999.0,
+    bsPadT: 0.0,
+    bsPadR: 0.0,
+    bsPadB: 0.0,
+    bsPadL: 0.0,
+    bsGap: 0.0,
+    bsAlignX: AlignStart,
+    bsAlignY: AlignStart,
+    bsFillTop: 0,
+    bsFillBot: 0,
+    bsBorderCol: 0,
+    bsBorderW: 0.0,
+    bsRadius: 0.0,
+    bsShadowCol: 0,
+    bsShadowY: 0.0,
+    bsShadowBlur: 0.0,
+    bsDoubleBorder: false,
+    bsClip: false,
+}
+
+pub def applyStyles(mods: List StyleMod): BoxStyle = {
+    let cur = cellNew(mods);
+    let st = cellNew(defaultBoxStyle());
+    while (match cellGet(cur) { Nil -> false, _ -> true }) {
+        match cellGet(cur) {
+            Cons(fn, rest) -> {
+                cellSet(st, fn(cellGet(st)));
+                cellSet(cur, rest)
+            },
+            Nil -> (),
+        }
+    };
+    cellGet(st)
+}
+
+pub def wFit(): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: SizeFit, bsHeight: s.bsHeight, bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: s.bsMaxW, bsMaxH: s.bsMaxH,
+    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
+    bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
+    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
+    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
+    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+}
+
+pub def hFit(): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: s.bsWidth, bsHeight: SizeFit, bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: s.bsMaxW, bsMaxH: s.bsMaxH,
+    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
+    bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
+    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
+    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
+    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+}
+
+pub def wFixed(px: Float): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: SizeFixed(maxFloat(0.0, px)), bsHeight: s.bsHeight, bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: s.bsMaxW, bsMaxH: s.bsMaxH,
+    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
+    bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
+    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
+    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
+    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+}
+
+pub def hFixed(px: Float): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: s.bsWidth, bsHeight: SizeFixed(maxFloat(0.0, px)), bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: s.bsMaxW, bsMaxH: s.bsMaxH,
+    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
+    bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
+    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
+    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
+    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+}
+
+pub def fixedSize(w: Float, h: Float): StyleMod = (s) -> hFixed(h)(wFixed(w)(s))
+
+pub def wGrow(weight: Float): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: SizeGrow(maxFloat(0.001, weight)), bsHeight: s.bsHeight, bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: s.bsMaxW, bsMaxH: s.bsMaxH,
+    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
+    bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
+    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
+    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
+    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+}
+
+pub def hGrow(weight: Float): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: s.bsWidth, bsHeight: SizeGrow(maxFloat(0.001, weight)), bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: s.bsMaxW, bsMaxH: s.bsMaxH,
+    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
+    bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
+    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
+    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
+    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+}
+
+pub def fillSpace(): StyleMod = (s) -> hGrow(1.0)(wGrow(1.0)(s))
+
+pub def wPct(pct01: Float): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: SizePercent(clamp01(pct01)), bsHeight: s.bsHeight, bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: s.bsMaxW, bsMaxH: s.bsMaxH,
+    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
+    bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
+    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
+    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
+    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+}
+
+pub def hPct(pct01: Float): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: s.bsWidth, bsHeight: SizePercent(clamp01(pct01)), bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: s.bsMaxW, bsMaxH: s.bsMaxH,
+    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
+    bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
+    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
+    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
+    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+}
+
+pub def minW(px: Float): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: s.bsWidth, bsHeight: s.bsHeight, bsMinW: maxFloat(0.0, px), bsMinH: s.bsMinH, bsMaxW: s.bsMaxW, bsMaxH: s.bsMaxH,
+    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
+    bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
+    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
+    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
+    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+}
+
+pub def maxW(px: Float): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: s.bsWidth, bsHeight: s.bsHeight, bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: maxFloat(0.0, px), bsMaxH: s.bsMaxH,
+    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
+    bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
+    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
+    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
+    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+}
+
+pub def padTRBL(t: Float, r: Float, b: Float, l: Float): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: s.bsWidth, bsHeight: s.bsHeight, bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: s.bsMaxW, bsMaxH: s.bsMaxH,
+    bsPadT: maxFloat(0.0, t), bsPadR: maxFloat(0.0, r), bsPadB: maxFloat(0.0, b), bsPadL: maxFloat(0.0, l), bsGap: s.bsGap,
+    bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
+    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
+    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
+    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+}
+
+pub def padXY(px: Float, py: Float): StyleMod = padTRBL(py, px, py, px)
+pub def pad(p: Float): StyleMod = padTRBL(p, p, p, p)
+
+pub def gap(g: Float): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: s.bsWidth, bsHeight: s.bsHeight, bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: s.bsMaxW, bsMaxH: s.bsMaxH,
+    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: maxFloat(0.0, g),
+    bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
+    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
+    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
+    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+}
+
+pub def alignX(ax: AlignItems): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: s.bsWidth, bsHeight: s.bsHeight, bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: s.bsMaxW, bsMaxH: s.bsMaxH,
+    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
+    bsAlignX: ax, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
+    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
+    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
+    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+}
+
+pub def alignY(ay: AlignItems): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: s.bsWidth, bsHeight: s.bsHeight, bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: s.bsMaxW, bsMaxH: s.bsMaxH,
+    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
+    bsAlignX: s.bsAlignX, bsAlignY: ay, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
+    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
+    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
+    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+}
+
+pub def centerContent(): StyleMod = (s) -> alignY(AlignMid)(alignX(AlignMid)(s))
+
+pub def bgGrad(topCol: Color, botCol: Color): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: s.bsWidth, bsHeight: s.bsHeight, bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: s.bsMaxW, bsMaxH: s.bsMaxH,
+    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
+    bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: topCol, bsFillBot: botCol,
+    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
+    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
+    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+}
+
+pub def bg(col: Color): StyleMod = bgGrad(col, col)
+
+pub def border(width: Float, col: Color): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: s.bsWidth, bsHeight: s.bsHeight, bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: s.bsMaxW, bsMaxH: s.bsMaxH,
+    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
+    bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
+    bsBorderCol: col, bsBorderW: maxFloat(0.0, width), bsRadius: s.bsRadius,
+    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
+    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+}
+
+pub def rounded(r: Float): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: s.bsWidth, bsHeight: s.bsHeight, bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: s.bsMaxW, bsMaxH: s.bsMaxH,
+    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
+    bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
+    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: maxFloat(0.0, r),
+    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
+    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+}
+
+pub def shadow(offsetY: Float, blur: Float, col: Color): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: s.bsWidth, bsHeight: s.bsHeight, bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: s.bsMaxW, bsMaxH: s.bsMaxH,
+    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
+    bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
+    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
+    bsShadowCol: col, bsShadowY: offsetY, bsShadowBlur: maxFloat(0.0, blur),
+    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+}
+
+pub def doubleBorder(on: Bool): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: s.bsWidth, bsHeight: s.bsHeight, bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: s.bsMaxW, bsMaxH: s.bsMaxH,
+    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
+    bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
+    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
+    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
+    bsDoubleBorder: on, bsClip: s.bsClip,
+}
+
+pub def clipped(on: Bool): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: s.bsWidth, bsHeight: s.bsHeight, bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: s.bsMaxW, bsMaxH: s.bsMaxH,
+    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
+    bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
+    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
+    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
+    bsDoubleBorder: s.bsDoubleBorder, bsClip: on,
+}
+
+pub data Theme {
+    MkTheme {
+        thBgTop: Color,
+        thBgMid: Color,
+        thBgBot: Color,
+        thSurfaceTop: Color,
+        thSurfaceBot: Color,
+        thInk: Color,
+        thMuted: Color,
+        thBorder: Color,
+        thPrimary: Color,
+        thPrimaryHover: Color,
+        thAccent: Color,
+        thDanger: Color,
+        thShadow: Color,
+    },
+}
+
+pub def themeXuanPaper(): Theme = MkTheme {
+    thBgTop: hexColor("#f7f3e9"),
+    thBgMid: hexColor("#efe8d9"),
+    thBgBot: hexColor("#e6dcc8"),
+    thSurfaceTop: hexColor("#faf6ee"),
+    thSurfaceBot: hexColor("#f2ebdc"),
+    thInk: hexColor("#1c1915"),
+    thMuted: hexColor("#6b6255"),
+    thBorder: rgba(130, 118, 98, 78),
+    thPrimary: hexColor("#275247"),
+    thPrimaryHover: hexColor("#1e4238"),
+    thAccent: hexColor("#9c722c"),
+    thDanger: hexColor("#9e2a22"),
+    thShadow: rgba(28, 22, 16, 28),
+}
+
+pub def themeInkDark(): Theme = MkTheme {
+    thBgTop: hexColor("#17191c"),
+    thBgMid: hexColor("#131518"),
+    thBgBot: hexColor("#0f1114"),
+    thSurfaceTop: hexColor("#21252a"),
+    thSurfaceBot: hexColor("#1b1f24"),
+    thInk: hexColor("#f2ede2"),
+    thMuted: hexColor("#9ca3af"),
+    thBorder: rgba(212, 185, 130, 52),
+    thPrimary: hexColor("#357a68"),
+    thPrimaryHover: hexColor("#42947f"),
+    thAccent: hexColor("#d4a853"),
+    thDanger: hexColor("#c94a3f"),
+    thShadow: rgba(0, 0, 0, 96),
+}
+
+// ============================================================================
+// 2. Declarative `Element msg` AST & `Functor` Instance
+// ============================================================================
+
+pub data CanvasHit msg {
+    MkCanvasHit {
+        chRect: Rect,
+        chKey: String,
+        chCursor: String,
+        chMsg: msg,
+    },
+}
+
+pub def canvasHit(r: Rect, key: String, cursor: String, actionMsg: msg): CanvasHit msg =
+    MkCanvasHit { chRect: r, chKey: key, chCursor: cursor, chMsg: actionMsg }
+
+pub data Element msg {
+    ElEmpty,
+    ElSpacer(Float, Float, Float),
+    ElText(FontSpec, Color, TextAlign, String),
+    ElParagraph(FontSpec, Float, Color, String),
+    ElProgressBar(BoxStyle, Float, Float, Color, Color, Color, Color, String),
+    ElImage(BoxStyle, String, Float),
+    ElButton(String, BoxStyle, BoxStyle, FontSpec, Color, String, Option msg),
+    ElInteractive(String, BoxStyle, BoxStyle, String, Option msg, Element msg),
+    ElTextInput(String, BoxStyle, FontSpec, Color, Color, Color, String, String, String -> msg, Option msg),
+    ElCanvas(BoxStyle, (Rect, Vec2, DrawList) -> List (CanvasHit msg)),
+    ElBox(BoxStyle, Element msg),
+    ElRow(BoxStyle, List (Element msg)),
+    ElCol(BoxStyle, List (Element msg)),
+    ElZStack(BoxStyle, List (Element msg)),
+    ElScroll(String, BoxStyle, Element msg),
+}
+
+pub def mapElement(f: a -> b, el: Element a): Element b = match el {
+    ElEmpty -> ElEmpty,
+    ElSpacer(w, h, g) -> ElSpacer(w, h, g),
+    ElText(fn, col, al, s) -> ElText(fn, col, al, s),
+    ElParagraph(fn, lh, col, s) -> ElParagraph(fn, lh, col, s),
+    ElProgressBar(st, r, tr, c1, c2, tc, trk, lbl) -> ElProgressBar(st, r, tr, c1, c2, tc, trk, lbl),
+    ElImage(st, k, al) -> ElImage(st, k, al),
+    ElButton(id, st, hst, fn, col, lbl, mMsg) ->
+        ElButton(id, st, hst, fn, col, lbl, match mMsg { Some(m) -> Some(f(m)), None -> None }),
+    ElInteractive(id, st, hst, cur, mMsg, child) ->
+        ElInteractive(id, st, hst, cur, match mMsg { Some(m) -> Some(f(m)), None -> None }, mapElement(f, child)),
+    ElTextInput(id, st, fn, tc, pc, fc, ph, val, onInp, mSub) ->
+        ElTextInput(id, st, fn, tc, pc, fc, ph, val, (txt) -> f(onInp(txt)), match mSub { Some(m) -> Some(f(m)), None -> None }),
+    ElCanvas(st, renderFn) ->
+        ElCanvas(st, (r, pt, dl) -> listMap(renderFn(r, pt, dl), (h) -> MkCanvasHit {
+            chRect: h.chRect,
+            chKey: h.chKey,
+            chCursor: h.chCursor,
+            chMsg: f(h.chMsg),
+        })),
+    ElBox(st, child) -> ElBox(st, mapElement(f, child)),
+    ElRow(st, children) -> ElRow(st, listMap(children, (c) -> mapElement(f, c))),
+    ElCol(st, children) -> ElCol(st, listMap(children, (c) -> mapElement(f, c))),
+    ElZStack(st, children) -> ElZStack(st, listMap(children, (c) -> mapElement(f, c))),
+    ElScroll(sid, st, child) -> ElScroll(sid, st, mapElement(f, child)),
+}
+
+instance Functor Element {
+    def fmap(f, el) = mapElement(f, el)
+}
+
+// ============================================================================
+// 3. Ergonomic Widget & Container Constructors
+// ============================================================================
+
+pub def emptyEl(): Element msg = ElEmpty
+pub def spacer(w: Float, h: Float): Element msg = ElSpacer(w, h, 0.0)
+pub def growSpacer(): Element msg = ElSpacer(0.0, 0.0, 1.0)
+
+pub def box(mods: List StyleMod, child: Element msg): Element msg =
+    ElBox(applyStyles(mods), child)
+
+pub def card(theme: Theme, mods: List StyleMod, children: List (Element msg)): Element msg = {
+    let baseMods: List StyleMod = [
+        bgGrad(theme.thSurfaceTop, theme.thSurfaceBot),
+        border(1.0, theme.thBorder),
+        rounded(4.0),
+        shadow(4.0, 14.0, theme.thShadow),
+        pad(14.0),
+        gap(8.0)
+    ];
+    ElCol(applyStyles(listAppend(baseMods, mods)), children)
+}
+
+pub def plaqueCard(theme: Theme, mods: List StyleMod, children: List (Element msg)): Element msg =
+    card(theme, listAppend([doubleBorder(true)], mods), children)
+
+pub def row(mods: List StyleMod, children: List (Element msg)): Element msg =
+    ElRow(applyStyles(mods), children)
+
+pub def col(mods: List StyleMod, children: List (Element msg)): Element msg =
+    ElCol(applyStyles(mods), children)
+
+pub def zstack(mods: List StyleMod, children: List (Element msg)): Element msg =
+    ElZStack(applyStyles(mods), children)
+
+pub def scrollView(scrollId: String, mods: List StyleMod, child: Element msg): Element msg =
+    ElScroll(scrollId, applyStyles(mods), child)
+
+pub def label(font: FontSpec, col: Color, txt: String): Element msg =
+    ElText(font, col, AlignLeft, txt)
+
+pub def heading(theme: Theme, size: Float, txt: String): Element msg =
+    ElText(fontSerif(size, 700), theme.thInk, AlignLeft, txt)
+
+pub def mutedText(theme: Theme, size: Float, txt: String): Element msg =
+    ElText(fontSans(size, 500), theme.thMuted, AlignLeft, txt)
+
+pub def paragraph(font: FontSpec, lineHeight: Float, col: Color, txt: String): Element msg =
+    ElParagraph(font, lineHeight, col, txt)
+
+pub def badge(txt: String, fg: Color, bgCol: Color, bdCol: Color): Element msg =
+    ElBox(
+        applyStyles([padXY(8.0, 3.0), bg(bgCol), border(0.8, bdCol), rounded(3.0)]),
+        ElText(fontSans(11.0, 600), fg, AlignCenter, txt)
+    )
+
+pub def progressBar(
+    mods: List StyleMod,
+    ratio: Float,
+    trailRatio: Float,
+    fillStart: Color,
+    fillEnd: Color,
+    trailCol: Color,
+    trackCol: Color,
+    rightLabel: String
+): Element msg = {
+    let base: List StyleMod = [wGrow(1.0), hFixed(10.0), rounded(2.5)];
+    ElProgressBar(applyStyles(listAppend(base, mods)), ratio, trailRatio, fillStart, fillEnd, trailCol, trackCol, rightLabel)
+}
+
+pub def imageBox(imgKey: String, w: Float, h: Float, radius: Float): Element msg =
+    ElImage(applyStyles([fixedSize(w, h), rounded(radius)]), imgKey, 1.0)
+
+pub def button(theme: Theme, btnKey: String, labelTxt: String, mOnClick: Option msg): Element msg = {
+    let disabled = match mOnClick { None -> true, Some(_) -> false };
+    let baseFill = if (disabled) withAlpha(theme.thSurfaceTop, 0.45) else theme.thPrimary;
+    let hovFill = if (disabled) baseFill else theme.thPrimaryHover;
+    let fg = if (disabled) theme.thMuted else hexColor("#faf6ee");
+    let norm = applyStyles([padXY(14.0, 8.0), hFixed(34.0), bg(baseFill), border(1.0, withAlpha(theme.thInk, 0.18)), rounded(3.5)]);
+    let hov = applyStyles([padXY(14.0, 8.0), hFixed(34.0), bg(hovFill), border(1.0, theme.thAccent), rounded(3.5)]);
+    ElButton(btnKey, norm, hov, fontSans(13.0, 600), fg, labelTxt, mOnClick)
+}
+
+pub def outlineButton(theme: Theme, btnKey: String, active: Bool, labelTxt: String, mOnClick: Option msg): Element msg = {
+    let disabled = match mOnClick { None -> true, Some(_) -> false };
+    let normBg = if (active) theme.thInk else theme.thSurfaceTop;
+    let hovBg = if (active) theme.thInk else theme.thSurfaceBot;
+    let normBd = if (active) theme.thAccent else theme.thBorder;
+    let hovBd = theme.thAccent;
+    let fg = if (active) theme.thSurfaceTop else if (disabled) theme.thMuted else theme.thInk;
+    let norm = applyStyles([padXY(12.0, 7.0), hFixed(32.0), bg(normBg), border(1.0, normBd), rounded(3.5)]);
+    let hov = applyStyles([padXY(12.0, 7.0), hFixed(32.0), bg(hovBg), border(1.0, hovBd), rounded(3.5)]);
+    ElButton(btnKey, norm, hov, fontSans(12.5, 600), fg, labelTxt, mOnClick)
+}
+
+pub def interactive(
+    hitKey: String,
+    normalMods: List StyleMod,
+    hoverMods: List StyleMod,
+    mOnClick: Option msg,
+    child: Element msg
+): Element msg = {
+    let norm = applyStyles(normalMods);
+    let hov = applyStyles(listAppend(normalMods, hoverMods));
+    let cur = match mOnClick { Some(_) -> "pointer", None -> "default" };
+    ElInteractive(hitKey, norm, hov, cur, mOnClick, child)
+}
+
+pub def textInput(
+    theme: Theme,
+    inputId: String,
+    mods: List StyleMod,
+    placeholder: String,
+    value: String,
+    onInput: String -> msg,
+    mOnSubmit: Option msg
+): Element msg = {
+    let base: List StyleMod = [
+        wGrow(1.0), hFixed(36.0), padXY(10.0, 8.0),
+        bg(theme.thSurfaceTop), border(1.0, theme.thBorder), rounded(3.5)
+    ];
+    ElTextInput(
+        inputId,
+        applyStyles(listAppend(base, mods)),
+        fontSans(13.5, 500),
+        theme.thInk,
+        withAlpha(theme.thMuted, 0.72),
+        theme.thPrimary,
+        placeholder,
+        value,
+        onInput,
+        mOnSubmit
+    )
+}
+
+pub def canvasStage(
+    mods: List StyleMod,
+    renderFn: (Rect, Vec2, DrawList) -> List (CanvasHit msg)
+): Element msg =
+    ElCanvas(applyStyles(mods), renderFn)
+
+// ============================================================================
+// 4. Two-Pass Flexbox / Stack / Scroll Layout & Hitbox Emission Engine
+// ============================================================================
+
+pub data UiHitAction msg {
+    ActClick(msg),
+    ActFocusInput(String, String, Rect, String -> msg, Option msg),
+    ActSwallow,
+}
+
+pub data PlacedHitbox msg {
+    MkPlacedHitbox {
+        phRect: Rect,
+        phKey: String,
+        phCursor: String,
+        phAction: UiHitAction msg,
+    },
+}
+
+pub data PlacedScroll {
+    MkPlacedScroll {
+        psRect: Rect,
+        psId: String,
+        psMaxScroll: Float,
+    },
+}
+
+pub data UiFrameCtx {
+    MkUiFrameCtx {
+        ufViewport: Rect,
+        ufPointer: Vec2,
+        ufPointerDown: Bool,
+        ufHoveredKey: String,
+        ufFocusedInput: String,
+        ufScrolls: StrMap Float,
+    },
+}
+
+pub data UiRenderOutput msg {
+    MkUiRenderOutput {
+        urHits: List (PlacedHitbox msg),
+        urScrolls: List PlacedScroll,
+        urActiveIme: Option (String, String, Rect),
+    },
+}
+
+def growWeightOf(sz: AxisSize): Float = match sz {
+    SizeGrow(w) -> maxFloat(0.0, w),
+    _ -> 0.0,
+}
+
+def elementGrowX(el: Element msg): Float = match el {
+    ElSpacer(_, _, g) -> g,
+    ElProgressBar(st, _, _, _, _, _, _, _) -> growWeightOf(st.bsWidth),
+    ElImage(st, _, _) -> growWeightOf(st.bsWidth),
+    ElButton(_, st, _, _, _, _, _) -> growWeightOf(st.bsWidth),
+    ElInteractive(_, st, _, _, _, _) -> growWeightOf(st.bsWidth),
+    ElTextInput(_, st, _, _, _, _, _, _, _, _) -> growWeightOf(st.bsWidth),
+    ElCanvas(st, _) -> growWeightOf(st.bsWidth),
+    ElBox(st, _) -> growWeightOf(st.bsWidth),
+    ElRow(st, _) -> growWeightOf(st.bsWidth),
+    ElCol(st, _) -> growWeightOf(st.bsWidth),
+    ElZStack(st, _) -> growWeightOf(st.bsWidth),
+    ElScroll(_, st, _) -> growWeightOf(st.bsWidth),
+    _ -> 0.0,
+}
+
+def elementGrowY(el: Element msg): Float = match el {
+    ElSpacer(_, _, g) -> g,
+    ElProgressBar(st, _, _, _, _, _, _, _) -> growWeightOf(st.bsHeight),
+    ElImage(st, _, _) -> growWeightOf(st.bsHeight),
+    ElButton(_, st, _, _, _, _, _) -> growWeightOf(st.bsHeight),
+    ElInteractive(_, st, _, _, _, _) -> growWeightOf(st.bsHeight),
+    ElTextInput(_, st, _, _, _, _, _, _, _, _) -> growWeightOf(st.bsHeight),
+    ElCanvas(st, _) -> growWeightOf(st.bsHeight),
+    ElBox(st, _) -> growWeightOf(st.bsHeight),
+    ElRow(st, _) -> growWeightOf(st.bsHeight),
+    ElCol(st, _) -> growWeightOf(st.bsHeight),
+    ElZStack(st, _) -> growWeightOf(st.bsHeight),
+    ElScroll(_, st, _) -> growWeightOf(st.bsHeight),
+    _ -> 0.0,
+}
+
+def resolveStyleAxis(sz: AxisSize, contentVal: Float, availVal: Float, minV: Float, maxV: Float): Float = {
+    let raw = match sz {
+        SizeFit -> contentVal,
+        SizeFixed(px) -> px,
+        SizeGrow(_) -> maxFloat(contentVal, availVal),
+        SizePercent(p) -> availVal * p,
+    };
+    clampFloat(minV, maxV, raw)
+}
+
+def resolveIntrinsicAxis(sz: AxisSize, contentVal: Float, availVal: Float, minV: Float, maxV: Float): Float = {
+    let raw = match sz {
+        SizeFit -> contentVal,
+        SizeFixed(px) -> px,
+        SizeGrow(_) -> contentVal,
+        SizePercent(p) -> availVal * p,
+    };
+    clampFloat(minV, maxV, raw)
+}
+
+def innerAvailW(st: BoxStyle, availW: Float): Float = {
+    let padX = st.bsPadL + st.bsPadR;
+    let outer = match st.bsWidth {
+        SizeFixed(px) -> clampFloat(st.bsMinW, st.bsMaxW, px),
+        SizePercent(p) -> clampFloat(st.bsMinW, st.bsMaxW, availW * p),
+        _ -> clampFloat(st.bsMinW, st.bsMaxW, availW),
+    };
+    maxFloat(0.0, outer - padX)
+}
+
+def innerAvailH(st: BoxStyle, availH: Float): Float = {
+    let padY = st.bsPadT + st.bsPadB;
+    let outer = match st.bsHeight {
+        SizeFixed(px) -> clampFloat(st.bsMinH, st.bsMaxH, px),
+        SizePercent(p) -> clampFloat(st.bsMinH, st.bsMaxH, availH * p),
+        _ -> clampFloat(st.bsMinH, st.bsMaxH, availH),
+    };
+    maxFloat(0.0, outer - padY)
+}
+
+def filterVisible(xs: List (Element msg)): List (Element msg) = {
+    let outRev: Cell (List (Element msg)) = cellNew(Nil);
+    let cur = cellNew(xs);
+    while (match cellGet(cur) { Nil -> false, _ -> true }) {
+        match cellGet(cur) {
+            Cons(ElEmpty, r) -> cellSet(cur, r),
+            Cons(el, r) -> {
+                cellSet(outRev, Cons(el, cellGet(outRev)));
+                cellSet(cur, r)
+            },
+            Nil -> (),
+        }
+    };
+    listRev(cellGet(outRev))
+}
+
+pub def measureElement(el: Element msg, availW: Float, availH: Float): (Float, Float) = match el {
+    ElEmpty -> (0.0, 0.0),
+    ElSpacer(w, h, _) -> (w, h),
+    ElText(fn, _, _, txt) -> (measureTextWidth(fn, txt) + 2.0, fn.fsSize * 1.35),
+    ElParagraph(fn, lineH, _, txt) -> {
+        let lines = wrapTextLines(fn, availW, txt);
+        let n = listLen(lines);
+        let maxLineW = cellNew(0.0);
+        let cur = cellNew(lines);
+        while (match cellGet(cur) { Nil -> false, _ -> true }) {
+            match cellGet(cur) {
+                Cons(ln, r) -> {
+                    let lw = measureTextWidth(fn, ln);
+                    if (lw > cellGet(maxLineW)) cellSet(maxLineW, lw) else ();
+                    cellSet(cur, r)
+                },
+                Nil -> (),
+            }
+        };
+        (minFloat(availW, cellGet(maxLineW) + 2.0), intToFloat(n) * maxFloat(fn.fsSize * 1.2, lineH))
+    },
+    ElProgressBar(st, _, _, _, _, _, _, _) -> (
+        resolveIntrinsicAxis(st.bsWidth, 120.0, availW, st.bsMinW, st.bsMaxW),
+        resolveIntrinsicAxis(st.bsHeight, 10.0, availH, st.bsMinH, st.bsMaxH)
+    ),
+    ElImage(st, _, _) -> (
+        resolveIntrinsicAxis(st.bsWidth, 48.0, availW, st.bsMinW, st.bsMaxW),
+        resolveIntrinsicAxis(st.bsHeight, 48.0, availH, st.bsMinH, st.bsMaxH)
+    ),
+    ElButton(_, st, _, fn, _, lbl, _) -> {
+        let cw = measureTextWidth(fn, lbl) + st.bsPadL + st.bsPadR + 4.0;
+        let ch = fn.fsSize * 1.35 + st.bsPadT + st.bsPadB;
+        (
+            resolveIntrinsicAxis(st.bsWidth, cw, availW, st.bsMinW, st.bsMaxW),
+            resolveIntrinsicAxis(st.bsHeight, ch, availH, st.bsMinH, st.bsMaxH)
+        )
+    },
+    ElInteractive(_, st, _, _, _, child) -> {
+        let iw = innerAvailW(st, availW);
+        let ih = innerAvailH(st, availH);
+        let (cw, ch) = measureElement(child, iw, ih);
+        (
+            resolveIntrinsicAxis(st.bsWidth, cw + st.bsPadL + st.bsPadR, availW, st.bsMinW, st.bsMaxW),
+            resolveIntrinsicAxis(st.bsHeight, ch + st.bsPadT + st.bsPadB, availH, st.bsMinH, st.bsMaxH)
+        )
+    },
+    ElTextInput(_, st, fn, _, _, _, _, _, _, _) -> {
+        let ch = fn.fsSize * 1.35 + st.bsPadT + st.bsPadB;
+        (
+            resolveIntrinsicAxis(st.bsWidth, 180.0, availW, st.bsMinW, st.bsMaxW),
+            resolveIntrinsicAxis(st.bsHeight, ch, availH, st.bsMinH, st.bsMaxH)
+        )
+    },
+    ElCanvas(st, _) -> (
+        resolveIntrinsicAxis(st.bsWidth, 240.0, availW, st.bsMinW, st.bsMaxW),
+        resolveIntrinsicAxis(st.bsHeight, 160.0, availH, st.bsMinH, st.bsMaxH)
+    ),
+    ElBox(st, child) -> {
+        let iw = innerAvailW(st, availW);
+        let ih = innerAvailH(st, availH);
+        let (cw, ch) = measureElement(child, iw, ih);
+        (
+            resolveIntrinsicAxis(st.bsWidth, cw + st.bsPadL + st.bsPadR, availW, st.bsMinW, st.bsMaxW),
+            resolveIntrinsicAxis(st.bsHeight, ch + st.bsPadT + st.bsPadB, availH, st.bsMinH, st.bsMaxH)
+        )
+    },
+    ElRow(st, children) -> {
+        let iw = innerAvailW(st, availW);
+        let ih = innerAvailH(st, availH);
+        let nonEmpty = filterVisible(children);
+        let count = listLen(nonEmpty);
+        let totalGaps = if (count > 1) intToFloat(count - 1) * st.bsGap else 0.0;
+        let sumW = cellNew(0.0);
+        let maxH = cellNew(0.0);
+        let cur = cellNew(nonEmpty);
+        while (match cellGet(cur) { Nil -> false, _ -> true }) {
+            match cellGet(cur) {
+                Cons(c, r) -> {
+                    let (cw, ch) = measureElement(c, iw, ih);
+                    cellSet(sumW, cellGet(sumW) + cw);
+                    if (ch > cellGet(maxH)) cellSet(maxH, ch) else ();
+                    cellSet(cur, r)
+                },
+                Nil -> (),
+            }
+        };
+        (
+            resolveIntrinsicAxis(st.bsWidth, cellGet(sumW) + totalGaps + st.bsPadL + st.bsPadR, availW, st.bsMinW, st.bsMaxW),
+            resolveIntrinsicAxis(st.bsHeight, cellGet(maxH) + st.bsPadT + st.bsPadB, availH, st.bsMinH, st.bsMaxH)
+        )
+    },
+    ElCol(st, children) -> {
+        let iw = innerAvailW(st, availW);
+        let ih = innerAvailH(st, availH);
+        let nonEmpty = filterVisible(children);
+        let count = listLen(nonEmpty);
+        let totalGaps = if (count > 1) intToFloat(count - 1) * st.bsGap else 0.0;
+        let maxW = cellNew(0.0);
+        let sumH = cellNew(0.0);
+        let cur = cellNew(nonEmpty);
+        while (match cellGet(cur) { Nil -> false, _ -> true }) {
+            match cellGet(cur) {
+                Cons(c, r) -> {
+                    let (cw, ch) = measureElement(c, iw, ih);
+                    if (cw > cellGet(maxW)) cellSet(maxW, cw) else ();
+                    cellSet(sumH, cellGet(sumH) + ch);
+                    cellSet(cur, r)
+                },
+                Nil -> (),
+            }
+        };
+        (
+            resolveIntrinsicAxis(st.bsWidth, cellGet(maxW) + st.bsPadL + st.bsPadR, availW, st.bsMinW, st.bsMaxW),
+            resolveIntrinsicAxis(st.bsHeight, cellGet(sumH) + totalGaps + st.bsPadT + st.bsPadB, availH, st.bsMinH, st.bsMaxH)
+        )
+    },
+    ElZStack(st, children) -> {
+        let iw = innerAvailW(st, availW);
+        let ih = innerAvailH(st, availH);
+        let maxW = cellNew(0.0);
+        let maxH = cellNew(0.0);
+        let cur = cellNew(filterVisible(children));
+        while (match cellGet(cur) { Nil -> false, _ -> true }) {
+            match cellGet(cur) {
+                Cons(c, r) -> {
+                    let (cw, ch) = measureElement(c, iw, ih);
+                    if (cw > cellGet(maxW)) cellSet(maxW, cw) else ();
+                    if (ch > cellGet(maxH)) cellSet(maxH, ch) else ();
+                    cellSet(cur, r)
+                },
+                Nil -> (),
+            }
+        };
+        (
+            resolveIntrinsicAxis(st.bsWidth, cellGet(maxW) + st.bsPadL + st.bsPadR, availW, st.bsMinW, st.bsMaxW),
+            resolveIntrinsicAxis(st.bsHeight, cellGet(maxH) + st.bsPadT + st.bsPadB, availH, st.bsMinH, st.bsMaxH)
+        )
+    },
+    ElScroll(_, st, child) -> {
+        let iw = innerAvailW(st, availW);
+        let (cw, ch) = measureElement(child, maxFloat(0.0, iw - 8.0), 999999.0);
+        (
+            resolveIntrinsicAxis(st.bsWidth, cw + st.bsPadL + st.bsPadR, availW, st.bsMinW, st.bsMaxW),
+            resolveIntrinsicAxis(st.bsHeight, minFloat(availH, ch + st.bsPadT + st.bsPadB), availH, st.bsMinH, st.bsMaxH)
+        )
+    },
+}
+
+def emitBoxBackground(dl: DrawList, st: BoxStyle, r: Rect): Void =
+    if (st.bsFillTop != 0 || st.bsFillBot != 0 || (st.bsBorderCol != 0 && st.bsBorderW > 0.0) || st.bsShadowBlur > 0.0) {
+        drawCard(
+            dl, r, st.bsRadius,
+            st.bsFillTop, if (st.bsFillBot != 0) st.bsFillBot else st.bsFillTop,
+            st.bsBorderCol, st.bsBorderW,
+            st.bsShadowCol, st.bsShadowY, st.bsShadowBlur,
+            st.bsDoubleBorder
+        )
+    } else ()
+
+def alignOffset(align: AlignItems, avail: Float, item: Float): Float = match align {
+    AlignStart -> 0.0,
+    AlignMid -> maxFloat(0.0, (avail - item) * 0.5),
+    AlignEnd -> maxFloat(0.0, avail - item),
+    AlignStretch -> 0.0,
+}
+
+def clipHitRect(r: Rect, mClip: Option Rect): Option Rect = match mClip {
+    None -> if (r.rw > 0.0 && r.rh > 0.0) Some(r) else None,
+    Some(cr) -> {
+        let inter = rectIntersect(r, cr);
+        if (inter.rw > 0.5 && inter.rh > 0.5) Some(inter) else None
+    },
+}
+
+def pushClippedHit(
+    hits: Vec (PlacedHitbox msg),
+    mClip: Option Rect,
+    r: Rect,
+    key: String,
+    cursor: String,
+    act: UiHitAction msg
+): Void = match clipHitRect(r, mClip) {
+    Some(validRect) -> vecPush(hits, MkPlacedHitbox {
+        phRect: validRect,
+        phKey: key,
+        phCursor: cursor,
+        phAction: act,
+    }),
+    None -> (),
+}
+
+def emitElement(
+    el: Element msg,
+    bounds: Rect,
+    mClip: Option Rect,
+    ctx: UiFrameCtx,
+    dl: DrawList,
+    hits: Vec (PlacedHitbox msg),
+    scrolls: Vec PlacedScroll,
+    activeIme: Cell (Option (String, String, Rect))
+): Void = match el {
+    ElEmpty -> (),
+    ElSpacer(_, _, _) -> (),
+    ElText(fn, col, al, txt) -> {
+        let fitted = truncateWithEllipsis(fn, bounds.rw + 2.0, txt);
+        let tx = match al {
+            AlignLeft -> bounds.rx,
+            AlignCenter -> bounds.rx + bounds.rw * 0.5,
+            AlignRight -> bounds.rx + bounds.rw,
+        };
+        let ty = bounds.ry + bounds.rh * 0.5 + fn.fsSize * 0.36;
+        drawText(dl, tx, ty, fn, al, col, fitted)
+    },
+    ElParagraph(fn, lineH, col, txt) -> {
+        let lines = wrapTextLines(fn, bounds.rw, txt);
+        let lh = maxFloat(fn.fsSize * 1.2, lineH);
+        let curY = cellNew(bounds.ry + fn.fsSize * 0.92);
+        let cur = cellNew(lines);
+        while (match cellGet(cur) { Nil -> false, _ -> true }) {
+            match cellGet(cur) {
+                Cons(ln, rest) -> {
+                    let y = cellGet(curY);
+                    if (y - fn.fsSize <= bounds.ry + bounds.rh + 2.0) {
+                        drawText(dl, bounds.rx, y, fn, AlignLeft, col, ln)
+                    } else ();
+                    cellSet(curY, y + lh);
+                    cellSet(cur, rest)
+                },
+                Nil -> (),
+            }
+        }
+    },
+    ElProgressBar(st, ratio, trail, c1, c2, tc, trk, lbl) -> {
+        drawProgressBar(dl, bounds, st.bsRadius, ratio, trail, c1, c2, tc, trk);
+        if (strLen(lbl) > 0) {
+            let lCol = if (ratio > 0.88) hexColor("#faf6ee") else hexColor("#2c251d");
+            drawText(dl, bounds.rx + bounds.rw - 5.0, bounds.ry + bounds.rh * 0.5 + 3.5, fontSans(9.5, 600), AlignRight, lCol, lbl)
+        } else ()
+    },
+    ElImage(st, imgKey, alpha) ->
+        drawImage(dl, imgKey, bounds, st.bsRadius, alpha),
+    ElButton(btnKey, normSt, hovSt, fn, fgCol, lbl, mMsg) -> {
+        let enabled = match mMsg { Some(_) -> true, None -> false };
+        let isHov = enabled && strLen(btnKey) > 0 && ctx.ufHoveredKey == btnKey;
+        let st = if (isHov) hovSt else normSt;
+        emitBoxBackground(dl, st, bounds);
+        let innerW = maxFloat(0.0, bounds.rw - st.bsPadL - st.bsPadR);
+        let fitted = truncateWithEllipsis(fn, innerW + 2.0, lbl);
+        drawText(
+            dl,
+            bounds.rx + bounds.rw * 0.5,
+            bounds.ry + bounds.rh * 0.5 + fn.fsSize * 0.36,
+            fn, AlignCenter, fgCol, fitted
+        );
+        match mMsg {
+            Some(actMsg) -> pushClippedHit(hits, mClip, bounds, btnKey, "pointer", ActClick(actMsg)),
+            None -> (),
+        }
+    },
+    ElInteractive(hitKey, normSt, hovSt, curStyle, mMsg, child) -> {
+        let enabled = match mMsg { Some(_) -> true, None -> false };
+        let isHov = enabled && strLen(hitKey) > 0 && ctx.ufHoveredKey == hitKey;
+        let st = if (isHov) hovSt else normSt;
+        emitBoxBackground(dl, st, bounds);
+        let inner = rect(
+            bounds.rx + st.bsPadL,
+            bounds.ry + st.bsPadT,
+            bounds.rw - st.bsPadL - st.bsPadR,
+            bounds.rh - st.bsPadT - st.bsPadB
+        );
+        if (st.bsClip) pushClip(dl, inner) else ();
+        let nextClip = if (st.bsClip) clipHitRect(inner, mClip) else mClip;
+        emitElement(child, inner, nextClip, ctx, dl, hits, scrolls, activeIme);
+        if (st.bsClip) popClip(dl) else ();
+        match mMsg {
+            Some(actMsg) -> pushClippedHit(hits, mClip, bounds, hitKey, curStyle, ActClick(actMsg)),
+            None -> (),
+        }
+    },
+    ElTextInput(inpId, st, fn, textCol, phCol, focusBdCol, placeholder, val, onInp, mSub) -> {
+        let focused = strLen(inpId) > 0 && ctx.ufFocusedInput == inpId;
+        let effSt = if (focused) border(1.6, focusBdCol)(st) else st;
+        emitBoxBackground(dl, effSt, bounds);
+        let inner = rect(
+            bounds.rx + st.bsPadL,
+            bounds.ry + st.bsPadT,
+            bounds.rw - st.bsPadL - st.bsPadR,
+            bounds.rh - st.bsPadT - st.bsPadB
+        );
+        pushClip(dl, inner);
+        let ty = bounds.ry + bounds.rh * 0.5 + fn.fsSize * 0.36;
+        if (strLen(val) == 0) {
+            drawText(dl, inner.rx, ty, fn, AlignLeft, phCol, placeholder);
+            if (focused) {
+                drawFillRect(dl, rect(inner.rx, bounds.ry + (bounds.rh - fn.fsSize * 1.15) * 0.5, 1.6, fn.fsSize * 1.15), 0.5, focusBdCol)
+            } else ()
+        } else {
+            drawText(dl, inner.rx, ty, fn, AlignLeft, textCol, val);
+            if (focused) {
+                let cx = minFloat(inner.rx + inner.rw - 2.0, inner.rx + measureTextWidth(fn, val) + 1.5);
+                drawFillRect(dl, rect(cx, bounds.ry + (bounds.rh - fn.fsSize * 1.15) * 0.5, 1.6, fn.fsSize * 1.15), 0.5, focusBdCol)
+            } else ()
+        };
+        popClip(dl);
+        if (focused) {
+            cellSet(activeIme, Some((inpId, val, bounds)));
+            emitImeInput(dl, inpId, val, bounds)
+        } else ();
+        pushClippedHit(hits, mClip, bounds, "input:" + inpId, "text", ActFocusInput(inpId, val, bounds, onInp, mSub))
+    },
+    ElCanvas(st, renderFn) -> {
+        emitBoxBackground(dl, st, bounds);
+        let inner = rect(
+            bounds.rx + st.bsPadL,
+            bounds.ry + st.bsPadT,
+            bounds.rw - st.bsPadL - st.bsPadR,
+            bounds.rh - st.bsPadT - st.bsPadB
+        );
+        pushClip(dl, inner);
+        let stageClip = clipHitRect(inner, mClip);
+        let customHits = renderFn(inner, ctx.ufPointer, dl);
+        popClip(dl);
+        let cur = cellNew(customHits);
+        while (match cellGet(cur) { Nil -> false, _ -> true }) {
+            match cellGet(cur) {
+                Cons(ch, rest) -> {
+                    pushClippedHit(hits, stageClip, ch.chRect, ch.chKey, ch.chCursor, ActClick(ch.chMsg));
+                    cellSet(cur, rest)
+                },
+                Nil -> (),
+            }
+        }
+    },
+    ElBox(st, child) -> {
+        emitBoxBackground(dl, st, bounds);
+        if (st.bsFillTop != 0 || st.bsBorderW > 0.0) {
+            pushClippedHit(hits, mClip, bounds, "", "default", ActSwallow)
+        } else ();
+        let inner = rect(
+            bounds.rx + st.bsPadL,
+            bounds.ry + st.bsPadT,
+            bounds.rw - st.bsPadL - st.bsPadR,
+            bounds.rh - st.bsPadT - st.bsPadB
+        );
+        if (st.bsClip) pushClip(dl, inner) else ();
+        let nextClip = if (st.bsClip) clipHitRect(inner, mClip) else mClip;
+        let (cw, ch) = measureElement(child, inner.rw, inner.rh);
+        let fw = match st.bsAlignX { AlignStretch -> inner.rw, _ -> if (elementGrowX(child) > 0.0) inner.rw else minFloat(inner.rw, cw) };
+        let fh = match st.bsAlignY { AlignStretch -> inner.rh, _ -> if (elementGrowY(child) > 0.0) inner.rh else minFloat(inner.rh, ch) };
+        let childRect = rect(
+            inner.rx + alignOffset(st.bsAlignX, inner.rw, fw),
+            inner.ry + alignOffset(st.bsAlignY, inner.rh, fh),
+            fw, fh
+        );
+        emitElement(child, childRect, nextClip, ctx, dl, hits, scrolls, activeIme);
+        if (st.bsClip) popClip(dl) else ()
+    },
+    ElRow(st, children) -> {
+        emitBoxBackground(dl, st, bounds);
+        if (st.bsFillTop != 0 || st.bsBorderW > 0.0) {
+            pushClippedHit(hits, mClip, bounds, "", "default", ActSwallow)
+        } else ();
+        let inner = rect(
+            bounds.rx + st.bsPadL,
+            bounds.ry + st.bsPadT,
+            bounds.rw - st.bsPadL - st.bsPadR,
+            bounds.rh - st.bsPadT - st.bsPadB
+        );
+        if (st.bsClip) pushClip(dl, inner) else ();
+        let nextClip = if (st.bsClip) clipHitRect(inner, mClip) else mClip;
+        let vis = filterVisible(children);
+        let n = listLen(vis);
+        if (n > 0) {
+            let totalGaps = if (n > 1) intToFloat(n - 1) * st.bsGap else 0.0;
+            let fixedSum = cellNew(0.0);
+            let growSum = cellNew(0.0);
+            let measuredRev: Cell (List (Element msg, Float, Float, Float)) = cellNew(Nil);
+            let c1 = cellNew(vis);
+            while (match cellGet(c1) { Nil -> false, _ -> true }) {
+                match cellGet(c1) {
+                    Cons(chEl, r) -> {
+                        let gx = elementGrowX(chEl);
+                        let (mw, mh) = measureElement(chEl, inner.rw, inner.rh);
+                        if (gx > 0.0) cellSet(growSum, cellGet(growSum) + gx)
+                        else cellSet(fixedSum, cellGet(fixedSum) + mw);
+                        cellSet(measuredRev, Cons((chEl, mw, mh, gx), cellGet(measuredRev)));
+                        cellSet(c1, r)
+                    },
+                    Nil -> (),
+                }
+            };
+            let remW = maxFloat(0.0, inner.rw - cellGet(fixedSum) - totalGaps);
+            let gTotal = cellGet(growSum);
+            let measured = listRev(cellGet(measuredRev));
+            let usedW = if (gTotal > 0.0) inner.rw else minFloat(inner.rw, cellGet(fixedSum) + totalGaps);
+            let curX = cellNew(inner.rx + alignOffset(st.bsAlignX, inner.rw, usedW));
+            let c2 = cellNew(measured);
+            while (match cellGet(c2) { Nil -> false, _ -> true }) {
+                match cellGet(c2) {
+                    Cons((chEl, mw, mh, gx), r) -> {
+                        let cw = if (gx > 0.0) remW * (gx / gTotal) else mw;
+                        let ch = match st.bsAlignY {
+                            AlignStretch -> inner.rh,
+                            _ -> if (elementGrowY(chEl) > 0.0) inner.rh else minFloat(inner.rh, mh),
+                        };
+                        let cy = inner.ry + alignOffset(st.bsAlignY, inner.rh, ch);
+                        let cx = cellGet(curX);
+                        emitElement(chEl, rect(cx, cy, cw, ch), nextClip, ctx, dl, hits, scrolls, activeIme);
+                        cellSet(curX, cx + cw + st.bsGap);
+                        cellSet(c2, r)
+                    },
+                    Nil -> (),
+                }
+            }
+        } else ();
+        if (st.bsClip) popClip(dl) else ()
+    },
+    ElCol(st, children) -> {
+        emitBoxBackground(dl, st, bounds);
+        if (st.bsFillTop != 0 || st.bsBorderW > 0.0) {
+            pushClippedHit(hits, mClip, bounds, "", "default", ActSwallow)
+        } else ();
+        let inner = rect(
+            bounds.rx + st.bsPadL,
+            bounds.ry + st.bsPadT,
+            bounds.rw - st.bsPadL - st.bsPadR,
+            bounds.rh - st.bsPadT - st.bsPadB
+        );
+        if (st.bsClip) pushClip(dl, inner) else ();
+        let nextClip = if (st.bsClip) clipHitRect(inner, mClip) else mClip;
+        let vis = filterVisible(children);
+        let n = listLen(vis);
+        if (n > 0) {
+            let totalGaps = if (n > 1) intToFloat(n - 1) * st.bsGap else 0.0;
+            let fixedSum = cellNew(0.0);
+            let growSum = cellNew(0.0);
+            let measuredRev: Cell (List (Element msg, Float, Float, Float)) = cellNew(Nil);
+            let c1 = cellNew(vis);
+            while (match cellGet(c1) { Nil -> false, _ -> true }) {
+                match cellGet(c1) {
+                    Cons(chEl, r) -> {
+                        let gy = elementGrowY(chEl);
+                        let cwAvail = inner.rw;
+                        let (mw, mh) = measureElement(chEl, cwAvail, inner.rh);
+                        if (gy > 0.0) cellSet(growSum, cellGet(growSum) + gy)
+                        else cellSet(fixedSum, cellGet(fixedSum) + mh);
+                        cellSet(measuredRev, Cons((chEl, mw, mh, gy), cellGet(measuredRev)));
+                        cellSet(c1, r)
+                    },
+                    Nil -> (),
+                }
+            };
+            let remH = maxFloat(0.0, inner.rh - cellGet(fixedSum) - totalGaps);
+            let gTotal = cellGet(growSum);
+            let measured = listRev(cellGet(measuredRev));
+            let usedH = if (gTotal > 0.0) inner.rh else minFloat(inner.rh, cellGet(fixedSum) + totalGaps);
+            let curY = cellNew(inner.ry + alignOffset(st.bsAlignY, inner.rh, usedH));
+            let c2 = cellNew(measured);
+            while (match cellGet(c2) { Nil -> false, _ -> true }) {
+                match cellGet(c2) {
+                    Cons((chEl, mw, mh, gy), r) -> {
+                        let ch = if (gy > 0.0) remH * (gy / gTotal) else mh;
+                        let cw = match st.bsAlignX {
+                            AlignStretch -> inner.rw,
+                            _ -> if (elementGrowX(chEl) > 0.0) inner.rw else minFloat(inner.rw, mw),
+                        };
+                        let cx = inner.rx + alignOffset(st.bsAlignX, inner.rw, cw);
+                        let cy = cellGet(curY);
+                        emitElement(chEl, rect(cx, cy, cw, ch), nextClip, ctx, dl, hits, scrolls, activeIme);
+                        cellSet(curY, cy + ch + st.bsGap);
+                        cellSet(c2, r)
+                    },
+                    Nil -> (),
+                }
+            }
+        } else ();
+        if (st.bsClip) popClip(dl) else ()
+    },
+    ElZStack(st, children) -> {
+        emitBoxBackground(dl, st, bounds);
+        let inner = rect(
+            bounds.rx + st.bsPadL,
+            bounds.ry + st.bsPadT,
+            bounds.rw - st.bsPadL - st.bsPadR,
+            bounds.rh - st.bsPadT - st.bsPadB
+        );
+        if (st.bsClip) pushClip(dl, inner) else ();
+        let nextClip = if (st.bsClip) clipHitRect(inner, mClip) else mClip;
+        let cur = cellNew(filterVisible(children));
+        while (match cellGet(cur) { Nil -> false, _ -> true }) {
+            match cellGet(cur) {
+                Cons(chEl, r) -> {
+                    let (mw, mh) = measureElement(chEl, inner.rw, inner.rh);
+                    let cw = if (elementGrowX(chEl) > 0.0) inner.rw else minFloat(inner.rw, mw);
+                    let ch = if (elementGrowY(chEl) > 0.0) inner.rh else minFloat(inner.rh, mh);
+                    let cx = inner.rx + alignOffset(st.bsAlignX, inner.rw, cw);
+                    let cy = inner.ry + alignOffset(st.bsAlignY, inner.rh, ch);
+                    emitElement(chEl, rect(cx, cy, cw, ch), nextClip, ctx, dl, hits, scrolls, activeIme);
+                    cellSet(cur, r)
+                },
+                Nil -> (),
+            }
+        };
+        if (st.bsClip) popClip(dl) else ()
+    },
+    ElScroll(scrollId, st, child) -> {
+        emitBoxBackground(dl, st, bounds);
+        let inner = rect(
+            bounds.rx + st.bsPadL,
+            bounds.ry + st.bsPadT,
+            bounds.rw - st.bsPadL - st.bsPadR,
+            bounds.rh - st.bsPadT - st.bsPadB
+        );
+        let contentW = maxFloat(0.0, inner.rw - 8.0);
+        let (_, contentH) = measureElement(child, contentW, 999999.0);
+        let maxScroll = maxFloat(0.0, contentH - inner.rh);
+        let rawScroll = match strMapGet(ctx.ufScrolls, scrollId) {
+            Some(v) -> v,
+            None -> 0.0,
+        };
+        let clampedScroll = clampFloat(0.0, maxScroll, rawScroll);
+        vecPush(scrolls, MkPlacedScroll {
+            psRect: bounds,
+            psId: scrollId,
+            psMaxScroll: maxScroll,
+        });
+        pushClip(dl, inner);
+        let scrollClip = clipHitRect(inner, mClip);
+        emitElement(
+            child,
+            rect(inner.rx, inner.ry - clampedScroll, contentW, maxFloat(inner.rh, contentH)),
+            scrollClip,
+            ctx, dl, hits, scrolls, activeIme
+        );
+        if (maxScroll > 1.0 && inner.rh > 16.0) {
+            let trackX = inner.rx + inner.rw - 4.0;
+            let thumbH = maxFloat(22.0, inner.rh * (inner.rh / maxFloat(1.0, contentH)));
+            let thumbY = inner.ry + (inner.rh - thumbH) * (clampedScroll / maxScroll);
+            drawFillRect(dl, rect(trackX, inner.ry, 3.5, inner.rh), 1.75, rgba(130, 118, 98, 45));
+            drawFillRect(dl, rect(trackX, thumbY, 3.5, thumbH), 1.75, rgba(110, 98, 80, 155))
+        } else ();
+        popClip(dl)
+    },
+}
+
+pub def renderUiRoot(rootEl: Element msg, ctx: UiFrameCtx, dl: DrawList): UiRenderOutput msg = {
+    let hits: Vec (PlacedHitbox msg) = vecNew();
+    let scrolls: Vec PlacedScroll = vecNew();
+    let activeIme: Cell (Option (String, String, Rect)) = cellNew(None);
+    emitElement(rootEl, ctx.ufViewport, Some(ctx.ufViewport), ctx, dl, hits, scrolls, activeIme);
+    MkUiRenderOutput {
+        urHits: vecToList(hits),
+        urScrolls: vecToList(scrolls),
+        urActiveIme: cellGet(activeIme),
+    }
+}
+
+pub def hitTestUi(hits: List (PlacedHitbox msg), x: Float, y: Float): Option (PlacedHitbox msg) = {
+    let cur = cellNew(listRev(hits));
+    let found: Cell (Option (PlacedHitbox msg)) = cellNew(None);
+    while (match cellGet(cur) { Nil -> false, _ -> match cellGet(found) { None -> true, Some(_) -> false } }) {
+        match cellGet(cur) {
+            Cons(hb, rest) -> {
+                if (rectContains(hb.phRect, x, y)) cellSet(found, Some(hb))
+                else cellSet(cur, rest)
+            },
+            Nil -> (),
+        }
+    };
+    cellGet(found)
+}
+
+pub def findScrollZoneAt(scrolls: List PlacedScroll, x: Float, y: Float): Option PlacedScroll = {
+    let cur = cellNew(listRev(scrolls));
+    let found: Cell (Option PlacedScroll) = cellNew(None);
+    while (match cellGet(cur) { Nil -> false, _ -> match cellGet(found) { None -> true, Some(_) -> false } }) {
+        match cellGet(cur) {
+            Cons(sz, rest) -> {
+                if (rectContains(sz.psRect, x, y)) cellSet(found, Some(sz))
+                else cellSet(cur, rest)
+            },
+            Nil -> (),
+        }
+    };
+    cellGet(found)
+}

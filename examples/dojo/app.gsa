@@ -1,0 +1,631 @@
+// Kagura Interactive Studio & 2D Martial Dojo Showcase (`examples/dojo/app.gsa`).
+//
+// Compiles unchanged to BOTH:
+//   1. `wasm32` WebAssembly (`build/dojo.wasm` + `host/web/kagura.js`)
+//   2. `arm64-apple-macosx14.0` Native Cocoa/Quartz2D App (`build/kagura-dojo`)
+
+use std.option.{Option, Some, None}
+use std.list.{listLen, listAppend, listMap, listRev}
+use std.str.intToStr
+use std.control.fmap
+use kagura.gfx.{
+    Vec2, vec2, vAdd, vSub, vScale, vNorm, Rect, rect,
+    Color, rgba, hexColor, withAlpha,
+    fontSans, fontSerif, fontMono,
+    sin, cos, atan2, radToDeg, clampFloat, clamp01, roundInt,
+    DrawList, drawCard, drawCircle, drawEllipse, drawLine, drawPolygon, drawRibbon, drawText, AlignCenter, AlignRight
+}
+use kagura.ui.{
+    Theme, themeXuanPaper, themeInkDark,
+    AlignMid, AlignStretch,
+    wFixed, hFixed, wGrow, hGrow, fillSpace, pad, padXY, gap, alignY, bg, border, rounded, clipped,
+    CanvasHit, canvasHit, Element,
+    spacer, growSpacer, card, plaqueCard, row, col, scrollView,
+    label, heading, mutedText, paragraph, badge, progressBar,
+    button, outlineButton, textInput, canvasStage
+}
+use kagura.stage.{
+    Camera2D, cameraNew, cameraStep, cameraZoomBy, cameraAddTrauma,
+    worldToScreen, screenToWorld, withCameraTransform,
+    EaseOutQuad, EaseInOutCubic, kf, sampleFloatTrack,
+    hitStop, visualTimeWithHitStops,
+    solveTwoBoneIk, sampleCatmullRom, buildTaperedPolygon,
+    Particle2D, MkBurstConfig, spawnBurst2D, stepParticles2D, drawParticles2D
+}
+use kagura.app.{
+    Cmd, CmdNone, CmdPlaySfx, cmdNone,
+    AppConfig, MkAppConfig, Runtime,
+    runtimeCreate, rtStepFrame, rtPointerMove, rtPointerClick,
+    rtScrollWheel, rtTextInput, rtTextSubmit, rtBlurInput, rtKeyDown
+}
+use kagura.host.envHost
+
+// ============================================================================
+// 1. Isolated Reusable Sub-Component (`StatCounter`) Composed via `Functor.fmap`
+// ============================================================================
+
+data CounterModel {
+    MkCounterModel {
+        cmTitle: String,
+        cmValue: Int,
+        cmMax: Int,
+        cmColor: Color,
+    },
+}
+
+data CounterMsg {
+    IncStat,
+    DecStat,
+}
+
+def updateCounter(m: CounterMsg, st: CounterModel): CounterModel = match m {
+    IncStat -> MkCounterModel {
+        cmTitle: st.cmTitle,
+        cmValue: if (st.cmValue + 5 > st.cmMax) st.cmMax else st.cmValue + 5,
+        cmMax: st.cmMax,
+        cmColor: st.cmColor,
+    },
+    DecStat -> MkCounterModel {
+        cmTitle: st.cmTitle,
+        cmValue: if (st.cmValue - 5 < 5) 5 else st.cmValue - 5,
+        cmMax: st.cmMax,
+        cmColor: st.cmColor,
+    },
+}
+
+def viewCounter(th: Theme, idPrefix: String, st: CounterModel): Element CounterMsg = {
+    let ratio = intToFloat(st.cmValue) / intToFloat(st.cmMax);
+    col([wGrow(1.0), gap(6.0), pad(10.0), bg(withAlpha(th.thSurfaceBot, 0.7)), border(0.8, th.thBorder), rounded(4.0)], [
+        row([wGrow(1.0), alignY(AlignMid)], [
+            label(fontSerif(13.5, 700), th.thInk, st.cmTitle),
+            growSpacer(),
+            label(fontMono(12.0, 600), th.thMuted, intToStr(st.cmValue) + " / " + intToStr(st.cmMax))
+        ]),
+        progressBar(
+            [wGrow(1.0), hFixed(7.0)],
+            ratio, ratio,
+            st.cmColor, st.cmColor, 0, rgba(90, 80, 65, 34), ""
+        ),
+        row([wGrow(1.0), gap(6.0)], [
+            outlineButton(th, idPrefix + "-dec", false, "-5", Some(DecStat)),
+            outlineButton(th, idPrefix + "-inc", false, "+5", Some(IncStat))
+        ])
+    ])
+}
+
+// ============================================================================
+// 2. Main Application Model & Messages
+// ============================================================================
+
+data DojoMsg {
+    ToggleDarkTheme,
+    TriggerStrike(String),
+    StrikeOrb(Int, Vec2),
+    ZoomStage(Float),
+    PowerCounterMsg(CounterMsg),
+    SpeedCounterMsg(CounterMsg),
+    UpdateNoteDraft(String),
+    SubmitNote,
+}
+
+data DojoModel {
+    MkDojoModel {
+        dmDark: Bool,
+        dmPower: CounterModel,
+        dmSpeed: CounterModel,
+        dmDraft: String,
+        dmLogs: List String,
+        dmComboHits: Int,
+        dmBanner: String,
+        dmStrikeElapsedMs: Float,
+        dmStrikeActive: Bool,
+        dmStrikeKind: String,
+        dmDummyHp: Int,
+        dmDummyTrail: Float,
+        dmCam: Camera2D,
+        dmParticles: List Particle2D,
+        dmTrailHistory: List Vec2,
+        dmClockSec: Float,
+    },
+}
+
+def initDojo(_vp: Rect): (DojoModel, Cmd DojoMsg) = (
+    MkDojoModel {
+        dmDark: false,
+        dmPower: MkCounterModel { cmTitle: "内劲 · 臂力", cmValue: 65, cmMax: 100, cmColor: hexColor("#9e2a22") },
+        dmSpeed: MkCounterModel { cmTitle: "身法 · 剑速", cmValue: 75, cmMax: 100, cmColor: hexColor("#275247") },
+        dmDraft: "",
+        dmLogs: [
+            "【神楽】欢迎体验纯 Geisha 声明式 UI + 2D 骨骼渲染框架。",
+            "【提示】右侧画布实时解算双骨骼 2-Bone IK 剑尖追踪；点击试剑桩或招式按钮触发定帧刀光与粒子迸射。",
+            "【架构】同一份 app.gsa 源码零改动同时编译为 WebAssembly (wasm32) 与 macOS Cocoa 原生应用。"
+        ],
+        dmComboHits: 0,
+        dmBanner: "「听风试剑」",
+        dmStrikeElapsedMs: 0.0,
+        dmStrikeActive: true,
+        dmStrikeKind: "slash",
+        dmDummyHp: 148,
+        dmDummyTrail: 1.0,
+        dmCam: cameraNew(0.0, -30.0, 1.0),
+        dmParticles: spawnBurst2D(MkBurstConfig {
+            bcOrigin: vec2(96.0, -48.0),
+            bcCount: 28,
+            bcBaseAngleRad: -0.6,
+            bcSpreadRad: 2.2,
+            bcMinSpeed: 70.0,
+            bcMaxSpeed: 240.0,
+            bcMinRadius: 2.2,
+            bcMaxRadius: 5.5,
+            bcLifeSec: 0.85,
+            bcDrag: 2.6,
+            bcGravity: 260.0,
+            bcColor: hexColor("#b83328"),
+            bcSeed: 42,
+        }),
+        dmTrailHistory: [vec2(-40.0, -95.0), vec2(8.0, -82.0), vec2(54.0, -64.0), vec2(98.0, -46.0)],
+        dmClockSec: 0.0,
+    },
+    cmdNone()
+)
+
+def triggerMove(kind: String, targetWorld: Vec2, st: DojoModel): (DojoModel, Cmd DojoMsg) = {
+    let dmg = if (kind == "heavy") 24 + st.dmPower.cmValue / 5 else 14 + st.dmPower.cmValue / 8;
+    let nextHp = if (st.dmDummyHp - dmg <= 0) 180 else st.dmDummyHp - dmg;
+    let title = if (kind == "heavy") "「崩山震岳」" else "「横江一剑」";
+    let burstCol = if (kind == "heavy") hexColor("#c98a2c") else hexColor("#b83328");
+    let newPts = spawnBurst2D(MkBurstConfig {
+        bcOrigin: targetWorld,
+        bcCount: 32,
+        bcBaseAngleRad: -0.45,
+        bcSpreadRad: 2.6,
+        bcMinSpeed: 85.0,
+        bcMaxSpeed: 290.0,
+        bcMinRadius: 2.4,
+        bcMaxRadius: 6.2,
+        bcLifeSec: 0.75,
+        bcDrag: 2.8,
+        bcGravity: 290.0,
+        bcColor: burstCol,
+        bcSeed: st.dmComboHits * 37 + roundInt(st.dmClockSec * 100.0),
+    });
+    let logEntry = "施展" + title + "，命中木人桩 -" + intToStr(dmg) + "（连击 ×" + intToStr(st.dmComboHits + 1) + "）";
+    (
+        MkDojoModel {
+            dmDark: st.dmDark,
+            dmPower: st.dmPower,
+            dmSpeed: st.dmSpeed,
+            dmDraft: st.dmDraft,
+            dmLogs: listAppend(st.dmLogs, [logEntry]),
+            dmComboHits: st.dmComboHits + 1,
+            dmBanner: title,
+            dmStrikeElapsedMs: 0.0,
+            dmStrikeActive: true,
+            dmStrikeKind: kind,
+            dmDummyHp: nextHp,
+            dmDummyTrail: st.dmDummyTrail,
+            dmCam: cameraAddTrauma(st.dmCam, if (kind == "heavy") 0.55 else 0.34),
+            dmParticles: listAppend(st.dmParticles, newPts),
+            dmTrailHistory: st.dmTrailHistory,
+            dmClockSec: st.dmClockSec,
+        },
+        CmdPlaySfx(if (kind == "heavy") "impact" else "parry")
+    )
+}
+
+def updateDojo(msg: DojoMsg, st: DojoModel): (DojoModel, Cmd DojoMsg) = match msg {
+    ToggleDarkTheme -> (
+        MkDojoModel {
+            dmDark: !st.dmDark, dmPower: st.dmPower, dmSpeed: st.dmSpeed,
+            dmDraft: st.dmDraft, dmLogs: st.dmLogs, dmComboHits: st.dmComboHits,
+            dmBanner: st.dmBanner, dmStrikeElapsedMs: st.dmStrikeElapsedMs,
+            dmStrikeActive: st.dmStrikeActive, dmStrikeKind: st.dmStrikeKind,
+            dmDummyHp: st.dmDummyHp, dmDummyTrail: st.dmDummyTrail,
+            dmCam: st.dmCam, dmParticles: st.dmParticles,
+            dmTrailHistory: st.dmTrailHistory, dmClockSec: st.dmClockSec,
+        },
+        CmdNone
+    ),
+    TriggerStrike(kind) -> triggerMove(kind, vec2(105.0, -52.0), st),
+    StrikeOrb(_, wpt) -> triggerMove("slash", wpt, st),
+    ZoomStage(factor) -> (
+        MkDojoModel {
+            dmDark: st.dmDark, dmPower: st.dmPower, dmSpeed: st.dmSpeed,
+            dmDraft: st.dmDraft, dmLogs: st.dmLogs, dmComboHits: st.dmComboHits,
+            dmBanner: st.dmBanner, dmStrikeElapsedMs: st.dmStrikeElapsedMs,
+            dmStrikeActive: st.dmStrikeActive, dmStrikeKind: st.dmStrikeKind,
+            dmDummyHp: st.dmDummyHp, dmDummyTrail: st.dmDummyTrail,
+            dmCam: cameraZoomBy(st.dmCam, factor), dmParticles: st.dmParticles,
+            dmTrailHistory: st.dmTrailHistory, dmClockSec: st.dmClockSec,
+        },
+        CmdNone
+    ),
+    PowerCounterMsg(cm) -> (
+        MkDojoModel {
+            dmDark: st.dmDark, dmPower: updateCounter(cm, st.dmPower), dmSpeed: st.dmSpeed,
+            dmDraft: st.dmDraft, dmLogs: st.dmLogs, dmComboHits: st.dmComboHits,
+            dmBanner: st.dmBanner, dmStrikeElapsedMs: st.dmStrikeElapsedMs,
+            dmStrikeActive: st.dmStrikeActive, dmStrikeKind: st.dmStrikeKind,
+            dmDummyHp: st.dmDummyHp, dmDummyTrail: st.dmDummyTrail,
+            dmCam: st.dmCam, dmParticles: st.dmParticles,
+            dmTrailHistory: st.dmTrailHistory, dmClockSec: st.dmClockSec,
+        },
+        CmdNone
+    ),
+    SpeedCounterMsg(cm) -> (
+        MkDojoModel {
+            dmDark: st.dmDark, dmPower: st.dmPower, dmSpeed: updateCounter(cm, st.dmSpeed),
+            dmDraft: st.dmDraft, dmLogs: st.dmLogs, dmComboHits: st.dmComboHits,
+            dmBanner: st.dmBanner, dmStrikeElapsedMs: st.dmStrikeElapsedMs,
+            dmStrikeActive: st.dmStrikeActive, dmStrikeKind: st.dmStrikeKind,
+            dmDummyHp: st.dmDummyHp, dmDummyTrail: st.dmDummyTrail,
+            dmCam: st.dmCam, dmParticles: st.dmParticles,
+            dmTrailHistory: st.dmTrailHistory, dmClockSec: st.dmClockSec,
+        },
+        CmdNone
+    ),
+    UpdateNoteDraft(txt) -> (
+        MkDojoModel {
+            dmDark: st.dmDark, dmPower: st.dmPower, dmSpeed: st.dmSpeed,
+            dmDraft: txt, dmLogs: st.dmLogs, dmComboHits: st.dmComboHits,
+            dmBanner: st.dmBanner, dmStrikeElapsedMs: st.dmStrikeElapsedMs,
+            dmStrikeActive: st.dmStrikeActive, dmStrikeKind: st.dmStrikeKind,
+            dmDummyHp: st.dmDummyHp, dmDummyTrail: st.dmDummyTrail,
+            dmCam: st.dmCam, dmParticles: st.dmParticles,
+            dmTrailHistory: st.dmTrailHistory, dmClockSec: st.dmClockSec,
+        },
+        CmdNone
+    ),
+    SubmitNote ->
+        if (strLen(st.dmDraft) == 0) (st, CmdNone)
+        else (
+            MkDojoModel {
+                dmDark: st.dmDark, dmPower: st.dmPower, dmSpeed: st.dmSpeed,
+                dmDraft: "",
+                dmLogs: listAppend(st.dmLogs, ["【批注】" + st.dmDraft]),
+                dmComboHits: st.dmComboHits,
+                dmBanner: st.dmBanner, dmStrikeElapsedMs: st.dmStrikeElapsedMs,
+                dmStrikeActive: st.dmStrikeActive, dmStrikeKind: st.dmStrikeKind,
+                dmDummyHp: st.dmDummyHp, dmDummyTrail: st.dmDummyTrail,
+                dmCam: st.dmCam, dmParticles: st.dmParticles,
+                dmTrailHistory: st.dmTrailHistory, dmClockSec: st.dmClockSec,
+            },
+            CmdNone
+        ),
+}
+
+def tickDojo(dtMs: Float, _vp: Rect, st: DojoModel): (DojoModel, Cmd DojoMsg) = {
+    let dtSec = clampFloat(0.001, 0.1, dtMs / 1000.0);
+    let spdScale = 0.55 + intToFloat(st.dmSpeed.cmValue) / 100.0;
+    let nextStrikeMs = if (st.dmStrikeActive) st.dmStrikeElapsedMs + dtMs * spdScale else 0.0;
+    let stillActive = st.dmStrikeActive && nextStrikeMs < 760.0;
+    let hpRatio = intToFloat(st.dmDummyHp) / 180.0;
+    let nextTrail =
+        if (st.dmDummyTrail > hpRatio) {
+            let d = st.dmDummyTrail - dtSec * 0.38;
+            if (d < hpRatio) hpRatio else d
+        } else hpRatio;
+    (
+        MkDojoModel {
+            dmDark: st.dmDark,
+            dmPower: st.dmPower,
+            dmSpeed: st.dmSpeed,
+            dmDraft: st.dmDraft,
+            dmLogs: st.dmLogs,
+            dmComboHits: st.dmComboHits,
+            dmBanner: st.dmBanner,
+            dmStrikeElapsedMs: if (stillActive) nextStrikeMs else 0.0,
+            dmStrikeActive: stillActive,
+            dmStrikeKind: st.dmStrikeKind,
+            dmDummyHp: st.dmDummyHp,
+            dmDummyTrail: nextTrail,
+            dmCam: cameraStep(st.dmCam, dtSec, 12.0, false),
+            dmParticles: stepParticles2D(st.dmParticles, dtSec),
+            dmTrailHistory: st.dmTrailHistory,
+            dmClockSec: st.dmClockSec + dtSec,
+        },
+        CmdNone
+    )
+}
+
+// ============================================================================
+// 3. Embedded 2D Martial Stage Renderer (`canvasStage` inside Flexbox UI)
+// ============================================================================
+
+def renderDojoStage(th: Theme, st: DojoModel, stageRect: Rect, pointerScreen: Vec2, dl: DrawList): List (CanvasHit DojoMsg) = {
+    let (visMs, inHitStop) = visualTimeWithHitStops([hitStop(210.0, 95.0)], st.dmStrikeElapsedMs);
+    let dashTrack = [
+        kf(0.0, 0.0, EaseOutQuad),
+        kf(210.0, 92.0, EaseOutQuad),
+        kf(665.0, 0.0, EaseInOutCubic)
+    ];
+    let dashX = if (st.dmStrikeActive) sampleFloatTrack(dashTrack, visMs, 0.0) else 0.0;
+
+    // Subtle atmospheric sun/moon disc behind characters
+    let discCol = if (st.dmDark) rgba(212, 168, 83, 28) else rgba(158, 42, 34, 24);
+    drawCircle(dl, stageRect.rx + stageRect.rw * 0.54, stageRect.ry + stageRect.rh * 0.44, 108.0, discCol, 0, 0.0);
+
+    // Interactive world target point: follows pointer when inside stage, or strike trajectory
+    let ptrInside =
+        pointerScreen.vx >= stageRect.rx && pointerScreen.vx <= stageRect.rx + stageRect.rw
+        && pointerScreen.vy >= stageRect.ry && pointerScreen.vy <= stageRect.ry + stageRect.rh;
+    let worldPtr = screenToWorld(st.dmCam, stageRect, pointerScreen, false);
+    let heroBase = vec2(-95.0 + dashX, 58.0);
+    let shoulder = vec2(heroBase.vx + 4.0, heroBase.vy - 82.0);
+
+    let strikeTip = vec2(
+        102.0,
+        if (st.dmStrikeKind == "heavy") -38.0 + sin(visMs * 0.015) * 18.0
+        else -54.0 + cos(visMs * 0.012) * 24.0
+    );
+    let desiredTip =
+        if (st.dmStrikeActive) strikeTip
+        else if (ptrInside) worldPtr
+        else vec2(48.0, -48.0 + sin(st.dmClockSec * 2.4) * 14.0);
+
+    // Solve 2-Bone Analytic IK for upper arm (36px) + forearm+sword reach (94px)
+    let (elbow, reachedTip) = solveTwoBoneIk(shoulder, desiredTip, 36.0, 94.0, -1.0);
+    let foreDir = vNorm(vSub(reachedTip, elbow));
+    let hand = vAdd(elbow, vScale(foreDir, 32.0));
+
+    let dummyPos = vec2(115.0, 58.0);
+    let dummyHitScreen = worldToScreen(st.dmCam, stageRect, vec2(dummyPos.vx, dummyPos.vy - 62.0), false);
+
+    withCameraTransform(dl, st.dmCam, stageRect, false, () -> {
+        // Ground horizon line & shadows
+        drawLine(dl, -240.0, 62.0, 240.0, 62.0, 1.4, withAlpha(th.thMuted, 0.45), false);
+        drawEllipse(dl, heroBase.vx, 63.0, 34.0, 6.5, rgba(20, 18, 15, 42), 0, 0.0);
+        drawEllipse(dl, dummyPos.vx, 63.0, 32.0, 6.5, rgba(20, 18, 15, 42), 0, 0.0);
+
+        // Wooden training dummy ("试剑木人桩")
+        let dummyFlash = st.dmStrikeActive && visMs >= 195.0 && visMs <= 340.0;
+        let dummyCol = if (dummyFlash) hexColor("#b83328") else if (st.dmDark) hexColor("#8b7355") else hexColor("#5c4934");
+        drawCard(dl, rect(dummyPos.vx - 11.0, dummyPos.vy - 112.0, 22.0, 112.0), 5.0, dummyCol, dummyCol, th.thInk, 1.2, 0, 0.0, 0.0, false);
+        drawLine(dl, dummyPos.vx - 30.0, dummyPos.vy - 76.0, dummyPos.vx + 22.0, dummyPos.vy - 82.0, 6.0, dummyCol, false);
+        drawLine(dl, dummyPos.vx - 26.0, dummyPos.vy - 52.0, dummyPos.vx + 20.0, dummyPos.vy - 48.0, 5.5, dummyCol, false);
+        drawCircle(dl, dummyPos.vx, dummyPos.vy - 124.0, 14.0, dummyCol, th.thInk, 1.2);
+
+        // Ink-wash swordswoman silhouette with tapered limbs & flowing hair ribbon
+        let inkBody = if (inHitStop) hexColor("#9e2a22") else th.thInk;
+        let outlineCol = th.thSurfaceTop;
+        let hip = vec2(heroBase.vx - 4.0, heroBase.vy - 44.0);
+        let frontKnee = vec2(heroBase.vx + 18.0, heroBase.vy - 22.0);
+        let frontFoot = vec2(heroBase.vx + 30.0, heroBase.vy);
+        let backKnee = vec2(heroBase.vx - 22.0, heroBase.vy - 20.0);
+        let backFoot = vec2(heroBase.vx - 38.0, heroBase.vy);
+
+        // Flowing ponytail ribbon via Catmull-Rom + tapered polygon
+        let sway = sin(st.dmClockSec * 4.2) * 6.0;
+        let hairCurve = sampleCatmullRom([
+            vec2(shoulder.vx - 6.0, shoulder.vy - 18.0),
+            vec2(shoulder.vx - 26.0, shoulder.vy - 10.0 + sway * 0.4),
+            vec2(shoulder.vx - 46.0, shoulder.vy + 4.0 + sway),
+            vec2(shoulder.vx - 62.0, shoulder.vy + 18.0 + sway * 1.2)
+        ], 5);
+        drawPolygon(dl, buildTaperedPolygon(hairCurve, 5.5, 1.0), inkBody, 0, 0.0);
+
+        // Legs, torso, head & IK-driven sword arm
+        drawPolygon(dl, buildTaperedPolygon([hip, backKnee, backFoot], 7.0, 3.8), inkBody, outlineCol, 1.2);
+        drawPolygon(dl, buildTaperedPolygon([hip, frontKnee, frontFoot], 7.2, 4.0), inkBody, outlineCol, 1.2);
+        drawPolygon(dl, buildTaperedPolygon([hip, shoulder], 10.5, 8.5), inkBody, outlineCol, 1.2);
+        drawCircle(dl, shoulder.vx + 2.0, shoulder.vy - 16.0, 11.5, inkBody, outlineCol, 1.4);
+        drawPolygon(dl, buildTaperedPolygon([shoulder, elbow, hand], 5.8, 3.6), inkBody, outlineCol, 1.2);
+
+        // Jian sword blade & guard
+        let bladeCol = if (st.dmDark) hexColor("#e5e7eb") else hexColor("#275247");
+        drawPolygon(dl, buildTaperedPolygon([hand, reachedTip], 3.2, 0.9), bladeCol, 0, 0.0);
+        drawCircle(dl, hand.vx, hand.vy, 4.2, hexColor("#c98a2c"), 0, 0.0);
+
+        // Sword slash ribbon arc during active strike or IK tracking
+        let arcPts = sampleCatmullRom([
+            vec2(shoulder.vx + 18.0, shoulder.vy - 36.0),
+            vec2((shoulder.vx + reachedTip.vx) * 0.5 + 16.0, (shoulder.vy + reachedTip.vy) * 0.5 - 24.0),
+            reachedTip
+        ], 6);
+        let ribSamples = listMap(arcPts, (p) -> (p.vx, p.vy, if (st.dmStrikeActive) 9.5 else 4.0));
+        drawRibbon(
+            dl,
+            ribSamples,
+            if (st.dmStrikeKind == "heavy") hexColor("#c98a2c") else hexColor("#9e2a22"),
+            if (st.dmStrikeActive) 0.85 else 0.35
+        );
+
+        // Particles in world space
+        drawParticles2D(dl, st.dmParticles);
+
+        // Joint debug markers showing live 2-Bone IK solution
+        drawCircle(dl, elbow.vx, elbow.vy, 3.0, hexColor("#c98a2c"), 0, 0.0);
+        drawCircle(dl, reachedTip.vx, reachedTip.vy, 3.8, hexColor("#9e2a22"), 0, 0.0)
+    });
+
+    // Callout seal banner in stage overlay coordinates
+    let bx = stageRect.rx + stageRect.rw * 0.5;
+    let by = stageRect.ry + 24.0;
+    drawCard(dl, rect(bx - 64.0, by, 128.0, 30.0), 3.0, th.thSurfaceTop, th.thSurfaceBot, hexColor("#9e2a22"), 1.1, th.thShadow, 2.0, 8.0, false);
+    drawText(dl, bx, by + 20.0, fontSerif(14.5, 700), AlignCenter, th.thInk, st.dmBanner);
+
+    let bladeAngle = roundInt(radToDeg(atan2(reachedTip.vy - hand.vy, reachedTip.vx - hand.vx)));
+    drawText(
+        dl,
+        stageRect.rx + stageRect.rw - 14.0,
+        stageRect.ry + stageRect.rh - 12.0,
+        fontMono(11.0, 500),
+        AlignRight,
+        th.thMuted,
+        "2-Bone IK θ=" + intToStr(bladeAngle) + "° · Particles=" + intToStr(listLen(st.dmParticles)) + (if (inHitStop) " · [HIT-STOP]" else "")
+    );
+
+    // Return clickable world hitbox on the training dummy!
+    [
+        canvasHit(
+            rect(dummyHitScreen.vx - 36.0, dummyHitScreen.vy - 68.0, 72.0, 136.0),
+            "stage-dummy",
+            "pointer",
+            StrikeOrb(1, vec2(dummyPos.vx - 10.0, dummyPos.vy - 64.0))
+        )
+    ]
+}
+
+// ============================================================================
+// 4. Declarative Flexbox + ScrollView + CanvasStage View Tree
+// ============================================================================
+
+def viewDojo(_vp: Rect, st: DojoModel): Element DojoMsg = {
+    let th = if (st.dmDark) themeInkDark() else themeXuanPaper();
+    let dummyRatio = clamp01(intToFloat(st.dmDummyHp) / 180.0);
+
+    col([fillSpace(), pad(18.0), gap(14.0)], [
+        // Top Header Plaque
+        plaqueCard(th, [wGrow(1.0), padXY(18.0, 12.0)], [
+            row([wGrow(1.0), alignY(AlignMid), gap(12.0)], [
+                badge("神楽 KAGURA", hexColor("#faf6ee"), hexColor("#9e2a22"), hexColor("#7a1f18")),
+                heading(th, 20.0, "Geisha 声明式 UI 与 2D 舞台渲染框架"),
+                mutedText(th, 12.5, "Binary DrawList · Clay Flexbox · Functor Component · 2-Bone IK"),
+                growSpacer(),
+                badge("连击 ×" + intToStr(st.dmComboHits), th.thPrimary, withAlpha(th.thPrimary, 0.12), withAlpha(th.thPrimary, 0.35)),
+                outlineButton(th, "btn-theme", st.dmDark, if (st.dmDark) "宣纸昼景" else "玄墨夜景", Some(ToggleDarkTheme))
+            ])
+        ]),
+
+        // Main Split Workspace: Left Declarative UI Controls + Right 2D Interactive Stage
+        row([fillSpace(), gap(16.0), alignY(AlignStretch)], [
+            // Left Column (Fixed 400px): Functor Sub-Components + Scrollable Log + CJK Input
+            col([wFixed(400.0), hGrow(1.0), gap(14.0)], [
+                card(th, [wGrow(1.0), gap(10.0)], [
+                    row([wGrow(1.0), alignY(AlignMid)], [
+                        heading(th, 15.5, "组件组合（Functor.fmap）"),
+                        growSpacer(),
+                        mutedText(th, 11.5, "独立状态子组件复用")
+                    ]),
+                    row([wGrow(1.0), gap(10.0)], [
+                        fmap(PowerCounterMsg, viewCounter(th, "pwr", st.dmPower)),
+                        fmap(SpeedCounterMsg, viewCounter(th, "spd", st.dmSpeed))
+                    ])
+                ]),
+
+                card(th, [fillSpace(), gap(10.0)], [
+                    row([wGrow(1.0), alignY(AlignMid)], [
+                        heading(th, 15.5, "演武纪要（自动折行与裁剪滚动）"),
+                        growSpacer(),
+                        mutedText(th, 11.5, intToStr(listLen(st.dmLogs)) + " 条记录")
+                    ]),
+                    scrollView("dojo-logs", [fillSpace(), pad(8.0), bg(withAlpha(th.thSurfaceBot, 0.55)), border(0.8, th.thBorder), rounded(3.5)],
+                        col([wGrow(1.0), gap(6.0)],
+                            listMap(listRev(st.dmLogs), (entry) ->
+                                paragraph(fontSans(12.5, 500), 18.0, th.thInk, entry)
+                            )
+                        )
+                    ),
+                    row([wGrow(1.0), gap(8.0), alignY(AlignMid)], [
+                        textInput(th, "dojo-note", [wGrow(1.0)], "输入中文批注（支持原生 IME）…", st.dmDraft, UpdateNoteDraft, Some(SubmitNote)),
+                        button(th, "btn-send-note", "记入", Some(SubmitNote))
+                    ])
+                ])
+            ]),
+
+            // Right Column (Grow): Embedded 2D Game Stage + Action Toolbar
+            card(th, [fillSpace(), gap(10.0)], [
+                row([wGrow(1.0), alignY(AlignMid), gap(12.0)], [
+                    heading(th, 15.5, "演武场画布（点击木人桩或移动鼠标实时解算双骨骼 IK）"),
+                    growSpacer(),
+                    mutedText(th, 12.0, "木人桩气血 " + intToStr(st.dmDummyHp) + " / 180"),
+                    progressBar(
+                        [wFixed(160.0), hFixed(9.0)],
+                        dummyRatio, st.dmDummyTrail,
+                        hexColor("#8e241c"), hexColor("#c24436"), hexColor("#d99b82"), rgba(90, 80, 65, 34), ""
+                    )
+                ]),
+
+                canvasStage(
+                    [fillSpace(), bg(if (st.dmDark) hexColor("#15181c") else hexColor("#f3ecdd")), border(1.0, th.thBorder), rounded(4.0), clipped(true)],
+                    (r, ptr, dl) -> renderDojoStage(th, st, r, ptr, dl)
+                ),
+
+                row([wGrow(1.0), gap(8.0), alignY(AlignMid)], [
+                    button(th, "btn-slash", "施展「横江一剑」", Some(TriggerStrike("slash"))),
+                    button(th, "btn-heavy", "施展「崩山震岳」", Some(TriggerStrike("heavy"))),
+                    spacer(8.0, 1.0),
+                    outlineButton(th, "btn-zoom-in", false, "镜头拉近 +", Some(ZoomStage(1.15))),
+                    outlineButton(th, "btn-zoom-out", false, "镜头拉远 -", Some(ZoomStage(0.87))),
+                    growSpacer(),
+                    mutedText(th, 11.5, "快捷键：J 横江一剑 · K 崩山震岳 · T 切换昼夜")
+                ])
+            ])
+        ])
+    ])
+}
+
+def dojoAppConfig(dark: Bool): AppConfig DojoModel DojoMsg = MkAppConfig {
+    appTheme: if (dark) themeInkDark() else themeXuanPaper(),
+    appDynamicTheme: Some((st) -> if (st.dmDark) themeInkDark() else themeXuanPaper()),
+    appPaperGrain: true,
+    appInit: initDojo,
+    appUpdate: updateDojo,
+    appView: viewDojo,
+    appTick: Some(tickDojo),
+    appOnKey: Some((k) -> match k {
+        "j" -> Some(TriggerStrike("slash")),
+        "J" -> Some(TriggerStrike("slash")),
+        "k" -> Some(TriggerStrike("heavy")),
+        "K" -> Some(TriggerStrike("heavy")),
+        "t" -> Some(ToggleDarkTheme),
+        "T" -> Some(ToggleDarkTheme),
+        _ -> None,
+    }),
+    appOnNetOpen: None,
+    appOnNetMessage: None,
+    appOnNetClose: None,
+}
+
+// ============================================================================
+// 5. Exported Host Entry Points (Shared by `wasm32` Web & `native` macOS Hosts)
+// ============================================================================
+
+def globalRuntime: Cell (Option (Runtime DojoModel DojoMsg)) = cellNew(None)
+
+def main(): Void = ()
+
+pub def kagura_init(w: Float, h: Float): Void = {
+    let rt = runtimeCreate(dojoAppConfig(false), w, h, envHost());
+    cellSet(globalRuntime, Some(rt))
+}
+
+pub def kagura_step_frame(dtMs: Float, w: Float, h: Float): Bool = match cellGet(globalRuntime) {
+    None -> false,
+    Some(rt) -> rtStepFrame(rt, dtMs, w, h),
+}
+
+pub def kagura_pointer_move(x: Float, y: Float): Void = match cellGet(globalRuntime) {
+    None -> (),
+    Some(rt) -> rtPointerMove(rt, x, y),
+}
+
+pub def kagura_pointer_click(x: Float, y: Float): Void = match cellGet(globalRuntime) {
+    None -> (),
+    Some(rt) -> rtPointerClick(rt, x, y),
+}
+
+pub def kagura_scroll_wheel(x: Float, y: Float, dy: Float): Void = match cellGet(globalRuntime) {
+    None -> (),
+    Some(rt) -> rtScrollWheel(rt, x, y, dy),
+}
+
+pub def kagura_text_input(inpId: String, val: String): Void = match cellGet(globalRuntime) {
+    None -> (),
+    Some(rt) -> rtTextInput(rt, inpId, val),
+}
+
+pub def kagura_text_submit(inpId: String): Void = match cellGet(globalRuntime) {
+    None -> (),
+    Some(rt) -> rtTextSubmit(rt, inpId),
+}
+
+pub def kagura_blur_input(): Void = match cellGet(globalRuntime) {
+    None -> (),
+    Some(rt) -> rtBlurInput(rt),
+}
+
+pub def kagura_key_down(key: String): Void = match cellGet(globalRuntime) {
+    None -> (),
+    Some(rt) -> rtKeyDown(rt, key),
+}

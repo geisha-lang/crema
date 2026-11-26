@@ -1,0 +1,744 @@
+// Kagura Layer 0 (`kagura.gfx`):
+// 8-byte word-aligned binary `DrawList`, RGBA color algebra, CJK-aware typography metrics,
+// and portable 2D geometry primitives shared across `wasm32` (Web) and `native` (macOS/C) hosts.
+
+use std.option.{Option, Some, None}
+use std.list.{listLen, listRev, listAppend}
+use std.buf.{bufNew, bufPushByte, bufToString}
+
+// ============================================================================
+// Portable IEEE-754 Math & Numeric Helpers
+// ============================================================================
+
+pub extern "sin" def sin(x: Float): Float
+pub extern "cos" def cos(x: Float): Float
+pub extern "acos" def acos(x: Float): Float
+pub extern "atan2" def atan2(y: Float, x: Float): Float
+pub extern "sqrt" def sqrt(x: Float): Float
+pub extern "exp" def exp(x: Float): Float
+
+pub def pi(): Float = 3.141592653589793
+pub def degToRad(deg: Float): Float = deg * 3.141592653589793 / 180.0
+pub def radToDeg(rad: Float): Float = rad * 180.0 / 3.141592653589793
+
+pub def absInt(x: Int): Int = if (x < 0) -x else x
+pub def minInt(a: Int, b: Int): Int = if (a <= b) a else b
+pub def maxInt(a: Int, b: Int): Int = if (a >= b) a else b
+pub def clampInt(lo: Int, hi: Int, x: Int): Int = maxInt(lo, minInt(hi, x))
+
+pub def absFloat(x: Float): Float = if (x < 0.0) 0.0 - x else x
+pub def minFloat(a: Float, b: Float): Float = if (a <= b) a else b
+pub def maxFloat(a: Float, b: Float): Float = if (a >= b) a else b
+pub def clampFloat(lo: Float, hi: Float, x: Float): Float = maxFloat(lo, minFloat(hi, x))
+pub def clamp01(x: Float): Float = clampFloat(0.0, 1.0, x)
+pub def lerpFloat(a: Float, b: Float, t: Float): Float = a + (b - a) * t
+
+pub def floorInt(x: Float): Int = {
+    let t = floatToInt(x);
+    if (intToFloat(t) > x) t - 1 else t
+}
+
+pub def ceilInt(x: Float): Int = {
+    let t = floatToInt(x);
+    if (intToFloat(t) < x) t + 1 else t
+}
+
+pub def roundInt(x: Float): Int =
+    if (x >= 0.0) floatToInt(x + 0.5) else floatToInt(x - 0.5)
+
+// ============================================================================
+// 2D Vectors & Rectangles
+// ============================================================================
+
+pub data Vec2 {
+    MkVec2 { vx: Float, vy: Float },
+}
+
+pub def vec2(x: Float, y: Float): Vec2 = MkVec2 { vx: x, vy: y }
+pub def vAdd(a: Vec2, b: Vec2): Vec2 = MkVec2 { vx: a.vx + b.vx, vy: a.vy + b.vy }
+pub def vSub(a: Vec2, b: Vec2): Vec2 = MkVec2 { vx: a.vx - b.vx, vy: a.vy - b.vy }
+pub def vScale(a: Vec2, s: Float): Vec2 = MkVec2 { vx: a.vx * s, vy: a.vy * s }
+pub def vDot(a: Vec2, b: Vec2): Float = a.vx * b.vx + a.vy * b.vy
+pub def vLen(a: Vec2): Float = sqrt(a.vx * a.vx + a.vy * a.vy)
+
+pub def vNorm(a: Vec2): Vec2 = {
+    let l = vLen(a);
+    if (l < 0.000001) MkVec2 { vx: 0.0, vy: 0.0 }
+    else MkVec2 { vx: a.vx / l, vy: a.vy / l }
+}
+
+pub def vDist(a: Vec2, b: Vec2): Float = vLen(vSub(a, b))
+
+pub def vLerp(a: Vec2, b: Vec2, t: Float): Vec2 =
+    MkVec2 { vx: lerpFloat(a.vx, b.vx, t), vy: lerpFloat(a.vy, b.vy, t) }
+
+pub data Rect {
+    MkRect { rx: Float, ry: Float, rw: Float, rh: Float },
+}
+
+pub def rect(x: Float, y: Float, w: Float, h: Float): Rect =
+    MkRect { rx: x, ry: y, rw: maxFloat(0.0, w), rh: maxFloat(0.0, h) }
+
+pub def rectContains(r: Rect, px: Float, py: Float): Bool =
+    px >= r.rx && px <= r.rx + r.rw && py >= r.ry && py <= r.ry + r.rh
+
+pub def rectInset(r: Rect, p: Float): Rect =
+    rect(r.rx + p, r.ry + p, r.rw - p * 2.0, r.rh - p * 2.0)
+
+pub def rectInsetTRBL(r: Rect, top: Float, right: Float, bottom: Float, left: Float): Rect =
+    rect(r.rx + left, r.ry + top, r.rw - left - right, r.rh - top - bottom)
+
+pub def rectIntersect(a: Rect, b: Rect): Rect = {
+    let x1 = maxFloat(a.rx, b.rx);
+    let y1 = maxFloat(a.ry, b.ry);
+    let x2 = minFloat(a.rx + a.rw, b.rx + b.rw);
+    let y2 = minFloat(a.ry + a.rh, b.ry + b.rh);
+    rect(x1, y1, x2 - x1, y2 - y1)
+}
+
+// ============================================================================
+// Packed 32-bit RGBA Colors (`0xRRGGBBAA`)
+// ============================================================================
+
+pub type Color = Int
+
+pub def colorTransparent(): Color = 0
+
+pub def rgba(r: Int, g: Int, b: Int, a: Int): Color =
+    ((clampInt(0, 255, r) & 255) << 24)
+    | ((clampInt(0, 255, g) & 255) << 16)
+    | ((clampInt(0, 255, b) & 255) << 8)
+    | (clampInt(0, 255, a) & 255)
+
+pub def rgb(r: Int, g: Int, b: Int): Color = rgba(r, g, b, 255)
+
+pub def colorR(c: Color): Int = (c >>> 24) & 255
+pub def colorG(c: Color): Int = (c >>> 16) & 255
+pub def colorB(c: Color): Int = (c >>> 8) & 255
+pub def colorA(c: Color): Int = c & 255
+
+pub def withAlpha(c: Color, alpha: Float): Color = {
+    let baseA = intToFloat(colorA(c)) / 255.0;
+    let outA = roundInt(clamp01(baseA * alpha) * 255.0);
+    (c & (-256)) | (outA & 255)
+}
+
+pub def lerpColor(c1: Color, c2: Color, t: Float): Color = {
+    let u = clamp01(t);
+    rgba(
+        roundInt(lerpFloat(intToFloat(colorR(c1)), intToFloat(colorR(c2)), u)),
+        roundInt(lerpFloat(intToFloat(colorG(c1)), intToFloat(colorG(c2)), u)),
+        roundInt(lerpFloat(intToFloat(colorB(c1)), intToFloat(colorB(c2)), u)),
+        roundInt(lerpFloat(intToFloat(colorA(c1)), intToFloat(colorA(c2)), u))
+    )
+}
+
+def hexNibble(b: Int): Int =
+    if (b >= 48 && b <= 57) b - 48
+    else if (b >= 65 && b <= 70) b - 55
+    else if (b >= 97 && b <= 102) b - 87
+    else 0
+
+def hexPair(s: String, idx: Int): Int =
+    (hexNibble(strByteAt(s, idx)) << 4) | hexNibble(strByteAt(s, idx + 1))
+
+pub def hexColor(raw: String): Color = {
+    let n = strLen(raw);
+    if (n == 0) 0
+    else {
+        let off = if (strByteAt(raw, 0) == 35) 1 else 0;
+        let rem = n - off;
+        if (rem == 6) {
+            rgb(hexPair(raw, off), hexPair(raw, off + 2), hexPair(raw, off + 4))
+        } else if (rem == 8) {
+            rgba(hexPair(raw, off), hexPair(raw, off + 2), hexPair(raw, off + 4), hexPair(raw, off + 6))
+        } else if (rem == 3) {
+            let r = hexNibble(strByteAt(raw, off));
+            let g = hexNibble(strByteAt(raw, off + 1));
+            let b = hexNibble(strByteAt(raw, off + 2));
+            rgb((r << 4) | r, (g << 4) | g, (b << 4) | b)
+        } else 0
+    }
+}
+
+// ============================================================================
+// Typography & UTF-8 / CJK Text Measurement
+// ============================================================================
+
+pub data FontFamily {
+    FontSans,
+    FontSerif,
+    FontMono,
+}
+
+pub def fontFamilyCode(f: FontFamily): Int = match f {
+    FontSans -> 0,
+    FontSerif -> 1,
+    FontMono -> 2,
+}
+
+pub data TextAlign {
+    AlignLeft,
+    AlignCenter,
+    AlignRight,
+}
+
+pub def textAlignCode(a: TextAlign): Int = match a {
+    AlignLeft -> 0,
+    AlignCenter -> 1,
+    AlignRight -> 2,
+}
+
+pub data FontSpec {
+    MkFontSpec {
+        fsFamily: FontFamily,
+        fsSize: Float,
+        fsWeight: Int,
+    },
+}
+
+pub def fontSans(size: Float, weight: Int): FontSpec =
+    MkFontSpec { fsFamily: FontSans, fsSize: size, fsWeight: weight }
+
+pub def fontSerif(size: Float, weight: Int): FontSpec =
+    MkFontSpec { fsFamily: FontSerif, fsSize: size, fsWeight: weight }
+
+pub def fontMono(size: Float, weight: Int): FontSpec =
+    MkFontSpec { fsFamily: FontMono, fsSize: size, fsWeight: weight }
+
+pub def utf8DecodeAt(s: String, idx: Int): (Int, Int) = {
+    let n = strLen(s);
+    if (idx >= n) (0, n)
+    else {
+        let b0 = strByteAt(s, idx) & 255;
+        if (b0 < 128) (b0, idx + 1)
+        else if (b0 < 224 && idx + 1 < n) {
+            let b1 = strByteAt(s, idx + 1) & 63;
+            (((b0 & 31) << 6) | b1, idx + 2)
+        } else if (b0 < 240 && idx + 2 < n) {
+            let b1 = strByteAt(s, idx + 1) & 63;
+            let b2 = strByteAt(s, idx + 2) & 63;
+            (((b0 & 15) << 12) | (b1 << 6) | b2, idx + 3)
+        } else if (idx + 3 < n) {
+            let b1 = strByteAt(s, idx + 1) & 63;
+            let b2 = strByteAt(s, idx + 2) & 63;
+            let b3 = strByteAt(s, idx + 3) & 63;
+            (((b0 & 7) << 18) | (b1 << 12) | (b2 << 6) | b3, idx + 4)
+        } else (65533, idx + 1)
+    }
+}
+
+def isUnicodeSpace(cp: Int): Bool =
+    cp == 32 || cp == 9 || cp == 10 || cp == 13 || cp == 12288
+
+pub def utf8Trim(s: String): String = {
+    let n = strLen(s);
+    let start = cellNew(0);
+    let stopStart = cellNew(false);
+    while (cellGet(start) < n && !cellGet(stopStart)) {
+        let (cp, nextIdx) = utf8DecodeAt(s, cellGet(start));
+        if (isUnicodeSpace(cp)) cellSet(start, nextIdx)
+        else cellSet(stopStart, true)
+    };
+    let s0 = cellGet(start);
+    if (s0 >= n) ""
+    else {
+        let lastNonSpaceEnd = cellNew(s0);
+        let cur = cellNew(s0);
+        while (cellGet(cur) < n) {
+            let (cp, nextIdx) = utf8DecodeAt(s, cellGet(cur));
+            if (!isUnicodeSpace(cp)) cellSet(lastNonSpaceEnd, nextIdx) else ();
+            cellSet(cur, nextIdx)
+        };
+        strSlice(s, s0, cellGet(lastNonSpaceEnd))
+    }
+}
+
+pub def codepointWidthFactor(cp: Int, isMono: Bool): Float =
+    if (isMono) {
+        if (cp >= 11904) 1.0 else 0.60
+    } else if (cp == 32) 0.30
+    else if (cp < 127) {
+        if (cp == 73 || cp == 105 || cp == 108 || cp == 46 || cp == 44 || cp == 58 || cp == 124) 0.32
+        else if (cp == 77 || cp == 87 || cp == 109 || cp == 119) 0.74
+        else 0.55
+    } else if (cp >= 8192 && cp <= 8303) 0.55
+    else if (cp == 183) 0.45
+    else 1.0
+
+pub def measureTextWidth(font: FontSpec, s: String): Float = {
+    let isMono = match font.fsFamily { FontMono -> true, _ -> false };
+    let n = strLen(s);
+    let cur = cellNew(0);
+    let units = cellNew(0.0);
+    while (cellGet(cur) < n) {
+        let (cp, nextIdx) = utf8DecodeAt(s, cellGet(cur));
+        cellSet(units, cellGet(units) + codepointWidthFactor(cp, isMono));
+        cellSet(cur, nextIdx)
+    };
+    cellGet(units) * font.fsSize
+}
+
+pub def truncateWithEllipsis(font: FontSpec, maxW: Float, s: String): String =
+    if (maxW <= 0.0) ""
+    else if (measureTextWidth(font, s) <= maxW) s
+    else {
+        let ellW = font.fsSize * 0.85;
+        let budget = maxFloat(0.0, maxW - ellW);
+        let isMono = match font.fsFamily { FontMono -> true, _ -> false };
+        let n = strLen(s);
+        let cur = cellNew(0);
+        let accW = cellNew(0.0);
+        let stop = cellNew(false);
+        while (cellGet(cur) < n && !cellGet(stop)) {
+            let i = cellGet(cur);
+            let (cp, nextIdx) = utf8DecodeAt(s, i);
+            let w = codepointWidthFactor(cp, isMono) * font.fsSize;
+            if (cellGet(accW) + w > budget) cellSet(stop, true)
+            else {
+                cellSet(accW, cellGet(accW) + w);
+                cellSet(cur, nextIdx)
+            }
+        };
+        strSlice(s, 0, cellGet(cur)) + "…"
+    }
+
+pub def wrapTextLines(font: FontSpec, maxW: Float, s: String): List String = {
+    let limit = maxFloat(font.fsSize * 1.5, maxW);
+    let isMono = match font.fsFamily { FontMono -> true, _ -> false };
+    let n = strLen(s);
+    if (n == 0) [""]
+    else {
+        let linesRev: Cell (List String) = cellNew(Nil);
+        let lineStart = cellNew(0);
+        let cur = cellNew(0);
+        let curW = cellNew(0.0);
+        while (cellGet(cur) < n) {
+            let idx = cellGet(cur);
+            let (cp, nextIdx) = utf8DecodeAt(s, idx);
+            if (cp == 10) {
+                cellSet(linesRev, Cons(strSlice(s, cellGet(lineStart), idx), cellGet(linesRev)));
+                cellSet(lineStart, nextIdx);
+                cellSet(curW, 0.0);
+                cellSet(cur, nextIdx)
+            } else {
+                let cw = codepointWidthFactor(cp, isMono) * font.fsSize;
+                if (cellGet(curW) + cw > limit && idx > cellGet(lineStart)) {
+                    cellSet(linesRev, Cons(strSlice(s, cellGet(lineStart), idx), cellGet(linesRev)));
+                    cellSet(lineStart, idx);
+                    cellSet(curW, cw);
+                    cellSet(cur, nextIdx)
+                } else {
+                    cellSet(curW, cellGet(curW) + cw);
+                    cellSet(cur, nextIdx)
+                }
+            }
+        };
+        let tail = strSlice(s, cellGet(lineStart), n);
+        listRev(Cons(tail, cellGet(linesRev)))
+    }
+}
+
+// ============================================================================
+// 8-Byte Word-Aligned Binary `DrawList`
+// ============================================================================
+//
+// Binary Opcode Table (`[lo32 = opcode, hi32 = aux]` at word `+0`):
+//   1  OP_CLEAR_BG        (3 words): [1, flags], [topCol, midCol], [botCol, 0]
+//   2  OP_RECT            (11 words): [2, flags], x, y, w, h, r, [fillTop, fillBot], [borderCol, shadowCol], lw, shY, shBlur
+//   3  OP_PROGRESS_BAR    (10 words): [3, 0], x, y, w, h, r, ratio, trail, [fillStart, fillEnd], [trailCol, trackCol]
+//   4  OP_ELLIPSE         (7 words): [4, 0], cx, cy, rx, ry, [fillCol, strokeCol], lw
+//   5  OP_LINE            (7 words): [5, flags], x1, y1, x2, y2, lw, [col, 0]
+//   6  OP_POLYGON         (3 + 2*N words): [6, N], [fillCol, strokeCol], lw, (px, py)*N
+//   7  OP_RIBBON          (3 + 3*N words): [7, N], [col, 0], baseAlpha, (x, y, width)*N
+//   8  OP_TEXT            (5 words): [8, strIdx], x, y, fontSize, [styleBits, col]
+//   9  OP_IMAGE           (7 words): [9, strIdx], x, y, w, h, radius, alpha
+//   10 OP_PUSH_CLIP       (5 words): [10, 0], x, y, w, h
+//   11 OP_POP_CLIP        (1 word):  [11, 0]
+//   12 OP_PUSH_TRANSFORM  (6 words): [12, 0], tx, ty, sx, sy, rotDeg
+//   13 OP_POP_TRANSFORM   (1 word):  [13, 0]
+//   14 OP_IME_INPUT       (6 words): [14, idStrIdx], [valStrIdx, 0], x, y, w, h
+//   15 OP_IME_CLEAR       (1 word):  [15, 0]
+
+pub def opClearBg(): Int = 1
+pub def opRect(): Int = 2
+pub def opProgressBar(): Int = 3
+pub def opEllipse(): Int = 4
+pub def opLine(): Int = 5
+pub def opPolygon(): Int = 6
+pub def opRibbon(): Int = 7
+pub def opText(): Int = 8
+pub def opImage(): Int = 9
+pub def opPushClip(): Int = 10
+pub def opPopClip(): Int = 11
+pub def opPushTransform(): Int = 12
+pub def opPopTransform(): Int = 13
+pub def opImeInput(): Int = 14
+pub def opImeClear(): Int = 15
+
+pub data DrawList {
+    MkDrawList {
+        dlWords: Cell (MutArray Int64),
+        dlWordLen: Cell Int,
+        dlStrs: Cell (MutArray String),
+        dlStrLen: Cell Int,
+        dlCmds: Cell Int,
+    },
+}
+
+pub def packI32Pair(lo: Int, hi: Int): Int64 = {
+    let loMask = (intToI64(65535) << 16) | intToI64(65535);
+    let lo64 = intToI64(lo) & loMask;
+    let hi64 = intToI64(hi) << 32;
+    lo64 | hi64
+}
+
+pub def unpackLo32(w: Int64): Int = i64ToInt(w)
+pub def unpackHi32(w: Int64): Int = i64ToInt(w >>> 32)
+
+pub def drawListWithCap(initWordCap: Int, initStrCap: Int): DrawList = {
+    let wc = maxInt(64, initWordCap);
+    let sc = maxInt(16, initStrCap);
+    MkDrawList {
+        dlWords: cellNew(arrayNewZeroed(wc)),
+        dlWordLen: cellNew(0),
+        dlStrs: cellNew(arrayNew(sc, "")),
+        dlStrLen: cellNew(0),
+        dlCmds: cellNew(0),
+    }
+}
+
+pub def drawListNew(): DrawList = drawListWithCap(1024, 128)
+
+pub def dlClear(dl: DrawList): Void = {
+    let nStr = cellGet(dl.dlStrLen);
+    let strs = cellGet(dl.dlStrs);
+    let i = cellNew(0);
+    while (cellGet(i) < nStr) {
+        let idx = cellGet(i);
+        arraySet(strs, idx, "");
+        cellSet(i, idx + 1)
+    };
+    cellSet(dl.dlWordLen, 0);
+    cellSet(dl.dlStrLen, 0);
+    cellSet(dl.dlCmds, 0)
+}
+
+pub def dlWordCount(dl: DrawList): Int = cellGet(dl.dlWordLen)
+pub def dlStrCount(dl: DrawList): Int = cellGet(dl.dlStrLen)
+pub def dlCmdCount(dl: DrawList): Int = cellGet(dl.dlCmds)
+pub def dlRawWords(dl: DrawList): MutArray Int64 = cellGet(dl.dlWords)
+pub def dlRawStrs(dl: DrawList): MutArray String = cellGet(dl.dlStrs)
+pub def dlWordAt(dl: DrawList, idx: Int): Int64 = arrayGet(cellGet(dl.dlWords), idx)
+pub def dlFloatAt(dl: DrawList, idx: Int): Float = bits64ToFloat(arrayGet(cellGet(dl.dlWords), idx))
+pub def dlStrAt(dl: DrawList, idx: Int): String = arrayGet(cellGet(dl.dlStrs), idx)
+
+def ensureWords(dl: DrawList, extra: Int): MutArray Int64 = {
+    let curArr = cellGet(dl.dlWords);
+    let curLen = cellGet(dl.dlWordLen);
+    let curCap = arrayLen(curArr);
+    if (curLen + extra <= curCap) curArr
+    else {
+        let nc = cellNew(maxInt(64, curCap * 2));
+        while (cellGet(nc) < curLen + extra) {
+            cellSet(nc, cellGet(nc) * 2)
+        };
+        let nextArr: MutArray Int64 = arrayNewZeroed(cellGet(nc));
+        let i = cellNew(0);
+        while (cellGet(i) < curLen) {
+            let idx = cellGet(i);
+            arraySet(nextArr, idx, arrayGet(curArr, idx));
+            cellSet(i, idx + 1)
+        };
+        cellSet(dl.dlWords, nextArr);
+        nextArr
+    }
+}
+
+pub def dlInternStr(dl: DrawList, s: String): Int = {
+    let curArr = cellGet(dl.dlStrs);
+    let curLen = cellGet(dl.dlStrLen);
+    let curCap = arrayLen(curArr);
+    let targetArr =
+        if (curLen + 1 <= curCap) curArr
+        else {
+            let nextArr = arrayNew(maxInt(16, curCap * 2), "");
+            let i = cellNew(0);
+            while (cellGet(i) < curLen) {
+                let idx = cellGet(i);
+                arraySet(nextArr, idx, arrayGet(curArr, idx));
+                cellSet(i, idx + 1)
+            };
+            cellSet(dl.dlStrs, nextArr);
+            nextArr
+        };
+    arraySet(targetArr, curLen, s);
+    cellSet(dl.dlStrLen, curLen + 1);
+    curLen
+}
+
+def bumpCmd(dl: DrawList): Void =
+    cellSet(dl.dlCmds, cellGet(dl.dlCmds) + 1)
+
+// ============================================================================
+// High-Level 2D Drawing Primitives
+// ============================================================================
+
+pub def drawClearBg(dl: DrawList, topCol: Color, midCol: Color, botCol: Color, vignette: Bool, paperGrain: Bool): Void = {
+    let flags = (if (vignette) 1 else 0) | (if (paperGrain) 2 else 0);
+    let arr = ensureWords(dl, 3);
+    let base = cellGet(dl.dlWordLen);
+    arraySet(arr, base, packI32Pair(1, flags));
+    arraySet(arr, base + 1, packI32Pair(topCol, midCol));
+    arraySet(arr, base + 2, packI32Pair(botCol, 0));
+    cellSet(dl.dlWordLen, base + 3);
+    bumpCmd(dl)
+}
+
+pub def drawCard(
+    dl: DrawList,
+    r: Rect,
+    radius: Float,
+    fillTop: Color,
+    fillBot: Color,
+    borderCol: Color,
+    borderW: Float,
+    shadowCol: Color,
+    shadowY: Float,
+    shadowBlur: Float,
+    doubleInsetBorder: Bool
+): Void = {
+    let arr = ensureWords(dl, 11);
+    let base = cellGet(dl.dlWordLen);
+    arraySet(arr, base, packI32Pair(2, if (doubleInsetBorder) 1 else 0));
+    arraySet(arr, base + 1, floatToBits64(r.rx));
+    arraySet(arr, base + 2, floatToBits64(r.ry));
+    arraySet(arr, base + 3, floatToBits64(r.rw));
+    arraySet(arr, base + 4, floatToBits64(r.rh));
+    arraySet(arr, base + 5, floatToBits64(radius));
+    arraySet(arr, base + 6, packI32Pair(fillTop, fillBot));
+    arraySet(arr, base + 7, packI32Pair(borderCol, shadowCol));
+    arraySet(arr, base + 8, floatToBits64(borderW));
+    arraySet(arr, base + 9, floatToBits64(shadowY));
+    arraySet(arr, base + 10, floatToBits64(shadowBlur));
+    cellSet(dl.dlWordLen, base + 11);
+    bumpCmd(dl)
+}
+
+pub def drawRect(dl: DrawList, r: Rect, radius: Float, fillCol: Color, borderCol: Color, borderW: Float): Void =
+    drawCard(dl, r, radius, fillCol, fillCol, borderCol, borderW, 0, 0.0, 0.0, false)
+
+pub def drawFillRect(dl: DrawList, r: Rect, radius: Float, fillCol: Color): Void =
+    drawCard(dl, r, radius, fillCol, fillCol, 0, 0.0, 0, 0.0, 0.0, false)
+
+pub def drawProgressBar(
+    dl: DrawList,
+    r: Rect,
+    radius: Float,
+    ratio: Float,
+    trailRatio: Float,
+    fillStart: Color,
+    fillEnd: Color,
+    trailCol: Color,
+    trackCol: Color
+): Void = {
+    let arr = ensureWords(dl, 10);
+    let base = cellGet(dl.dlWordLen);
+    arraySet(arr, base, packI32Pair(3, 0));
+    arraySet(arr, base + 1, floatToBits64(r.rx));
+    arraySet(arr, base + 2, floatToBits64(r.ry));
+    arraySet(arr, base + 3, floatToBits64(r.rw));
+    arraySet(arr, base + 4, floatToBits64(r.rh));
+    arraySet(arr, base + 5, floatToBits64(radius));
+    arraySet(arr, base + 6, floatToBits64(clamp01(ratio)));
+    arraySet(arr, base + 7, floatToBits64(clamp01(trailRatio)));
+    arraySet(arr, base + 8, packI32Pair(fillStart, fillEnd));
+    arraySet(arr, base + 9, packI32Pair(trailCol, trackCol));
+    cellSet(dl.dlWordLen, base + 10);
+    bumpCmd(dl)
+}
+
+pub def drawEllipse(dl: DrawList, cx: Float, cy: Float, rx: Float, ry: Float, fillCol: Color, strokeCol: Color, strokeW: Float): Void =
+    if (rx > 0.0 && ry > 0.0) {
+        let arr = ensureWords(dl, 7);
+        let base = cellGet(dl.dlWordLen);
+        arraySet(arr, base, packI32Pair(4, 0));
+        arraySet(arr, base + 1, floatToBits64(cx));
+        arraySet(arr, base + 2, floatToBits64(cy));
+        arraySet(arr, base + 3, floatToBits64(rx));
+        arraySet(arr, base + 4, floatToBits64(ry));
+        arraySet(arr, base + 5, packI32Pair(fillCol, strokeCol));
+        arraySet(arr, base + 6, floatToBits64(strokeW));
+        cellSet(dl.dlWordLen, base + 7);
+        bumpCmd(dl)
+    } else ()
+
+pub def drawCircle(dl: DrawList, cx: Float, cy: Float, r: Float, fillCol: Color, strokeCol: Color, strokeW: Float): Void =
+    drawEllipse(dl, cx, cy, r, r, fillCol, strokeCol, strokeW)
+
+pub def drawLine(dl: DrawList, x1: Float, y1: Float, x2: Float, y2: Float, lineW: Float, col: Color, dashed: Bool): Void = {
+    let arr = ensureWords(dl, 7);
+    let base = cellGet(dl.dlWordLen);
+    arraySet(arr, base, packI32Pair(5, if (dashed) 1 else 0));
+    arraySet(arr, base + 1, floatToBits64(x1));
+    arraySet(arr, base + 2, floatToBits64(y1));
+    arraySet(arr, base + 3, floatToBits64(x2));
+    arraySet(arr, base + 4, floatToBits64(y2));
+    arraySet(arr, base + 5, floatToBits64(lineW));
+    arraySet(arr, base + 6, packI32Pair(col, 0));
+    cellSet(dl.dlWordLen, base + 7);
+    bumpCmd(dl)
+}
+
+pub def drawPolygon(dl: DrawList, pts: List Vec2, fillCol: Color, strokeCol: Color, strokeW: Float): Void = {
+    let n = listLen(pts);
+    if (n >= 2) {
+        let totalWords = 3 + n * 2;
+        let arr = ensureWords(dl, totalWords);
+        let base = cellGet(dl.dlWordLen);
+        arraySet(arr, base, packI32Pair(6, n));
+        arraySet(arr, base + 1, packI32Pair(fillCol, strokeCol));
+        arraySet(arr, base + 2, floatToBits64(strokeW));
+        let pos = cellNew(base + 3);
+        let cur = cellNew(pts);
+        while (match cellGet(cur) { Nil -> false, _ -> true }) {
+            match cellGet(cur) {
+                Cons(p, rest) -> {
+                    let k = cellGet(pos);
+                    arraySet(arr, k, floatToBits64(p.vx));
+                    arraySet(arr, k + 1, floatToBits64(p.vy));
+                    cellSet(pos, k + 2);
+                    cellSet(cur, rest)
+                },
+                Nil -> (),
+            }
+        };
+        cellSet(dl.dlWordLen, base + totalWords);
+        bumpCmd(dl)
+    } else ()
+}
+
+pub def drawRibbon(dl: DrawList, samples: List (Float, Float, Float), col: Color, baseAlpha: Float): Void = {
+    let n = listLen(samples);
+    if (n >= 2) {
+        let totalWords = 3 + n * 3;
+        let arr = ensureWords(dl, totalWords);
+        let base = cellGet(dl.dlWordLen);
+        arraySet(arr, base, packI32Pair(7, n));
+        arraySet(arr, base + 1, packI32Pair(col, 0));
+        arraySet(arr, base + 2, floatToBits64(clamp01(baseAlpha)));
+        let pos = cellNew(base + 3);
+        let cur = cellNew(samples);
+        while (match cellGet(cur) { Nil -> false, _ -> true }) {
+            match cellGet(cur) {
+                Cons((sx, sy, sw), rest) -> {
+                    let k = cellGet(pos);
+                    arraySet(arr, k, floatToBits64(sx));
+                    arraySet(arr, k + 1, floatToBits64(sy));
+                    arraySet(arr, k + 2, floatToBits64(sw));
+                    cellSet(pos, k + 3);
+                    cellSet(cur, rest)
+                },
+                Nil -> (),
+            }
+        };
+        cellSet(dl.dlWordLen, base + totalWords);
+        bumpCmd(dl)
+    } else ()
+}
+
+pub def drawText(dl: DrawList, x: Float, y: Float, font: FontSpec, align: TextAlign, col: Color, txt: String): Void =
+    if (strLen(txt) > 0 && colorA(col) > 0) {
+        let sIdx = dlInternStr(dl, txt);
+        let wtClass = clampInt(1, 9, font.fsWeight / 100);
+        let styleBits = (fontFamilyCode(font.fsFamily) << 16) | (textAlignCode(align) << 8) | wtClass;
+        let arr = ensureWords(dl, 5);
+        let base = cellGet(dl.dlWordLen);
+        arraySet(arr, base, packI32Pair(8, sIdx));
+        arraySet(arr, base + 1, floatToBits64(x));
+        arraySet(arr, base + 2, floatToBits64(y));
+        arraySet(arr, base + 3, floatToBits64(font.fsSize));
+        arraySet(arr, base + 4, packI32Pair(styleBits, col));
+        cellSet(dl.dlWordLen, base + 5);
+        bumpCmd(dl)
+    } else ()
+
+pub def drawImage(dl: DrawList, imgKey: String, r: Rect, cornerRadius: Float, alpha: Float): Void =
+    if (strLen(imgKey) > 0 && r.rw > 0.0 && r.rh > 0.0) {
+        let sIdx = dlInternStr(dl, imgKey);
+        let arr = ensureWords(dl, 7);
+        let base = cellGet(dl.dlWordLen);
+        arraySet(arr, base, packI32Pair(9, sIdx));
+        arraySet(arr, base + 1, floatToBits64(r.rx));
+        arraySet(arr, base + 2, floatToBits64(r.ry));
+        arraySet(arr, base + 3, floatToBits64(r.rw));
+        arraySet(arr, base + 4, floatToBits64(r.rh));
+        arraySet(arr, base + 5, floatToBits64(cornerRadius));
+        arraySet(arr, base + 6, floatToBits64(clamp01(alpha)));
+        cellSet(dl.dlWordLen, base + 7);
+        bumpCmd(dl)
+    } else ()
+
+pub def pushClip(dl: DrawList, r: Rect): Void = {
+    let arr = ensureWords(dl, 5);
+    let base = cellGet(dl.dlWordLen);
+    arraySet(arr, base, packI32Pair(10, 0));
+    arraySet(arr, base + 1, floatToBits64(r.rx));
+    arraySet(arr, base + 2, floatToBits64(r.ry));
+    arraySet(arr, base + 3, floatToBits64(r.rw));
+    arraySet(arr, base + 4, floatToBits64(r.rh));
+    cellSet(dl.dlWordLen, base + 5);
+    bumpCmd(dl)
+}
+
+pub def popClip(dl: DrawList): Void = {
+    let arr = ensureWords(dl, 1);
+    let base = cellGet(dl.dlWordLen);
+    arraySet(arr, base, packI32Pair(11, 0));
+    cellSet(dl.dlWordLen, base + 1);
+    bumpCmd(dl)
+}
+
+pub def pushTransform(dl: DrawList, tx: Float, ty: Float, scaleX: Float, scaleY: Float, rotDeg: Float): Void = {
+    let arr = ensureWords(dl, 6);
+    let base = cellGet(dl.dlWordLen);
+    arraySet(arr, base, packI32Pair(12, 0));
+    arraySet(arr, base + 1, floatToBits64(tx));
+    arraySet(arr, base + 2, floatToBits64(ty));
+    arraySet(arr, base + 3, floatToBits64(scaleX));
+    arraySet(arr, base + 4, floatToBits64(scaleY));
+    arraySet(arr, base + 5, floatToBits64(rotDeg));
+    cellSet(dl.dlWordLen, base + 6);
+    bumpCmd(dl)
+}
+
+pub def popTransform(dl: DrawList): Void = {
+    let arr = ensureWords(dl, 1);
+    let base = cellGet(dl.dlWordLen);
+    arraySet(arr, base, packI32Pair(13, 0));
+    cellSet(dl.dlWordLen, base + 1);
+    bumpCmd(dl)
+}
+
+pub def emitImeInput(dl: DrawList, inputId: String, val: String, r: Rect): Void = {
+    let idIdx = dlInternStr(dl, inputId);
+    let valIdx = dlInternStr(dl, val);
+    let arr = ensureWords(dl, 6);
+    let base = cellGet(dl.dlWordLen);
+    arraySet(arr, base, packI32Pair(14, idIdx));
+    arraySet(arr, base + 1, packI32Pair(valIdx, 0));
+    arraySet(arr, base + 2, floatToBits64(r.rx));
+    arraySet(arr, base + 3, floatToBits64(r.ry));
+    arraySet(arr, base + 4, floatToBits64(r.rw));
+    arraySet(arr, base + 5, floatToBits64(r.rh));
+    cellSet(dl.dlWordLen, base + 6);
+    bumpCmd(dl)
+}
+
+pub def emitImeClear(dl: DrawList): Void = {
+    let arr = ensureWords(dl, 1);
+    let base = cellGet(dl.dlWordLen);
+    arraySet(arr, base, packI32Pair(15, 0));
+    cellSet(dl.dlWordLen, base + 1);
+    bumpCmd(dl)
+}

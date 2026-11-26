@@ -1,0 +1,552 @@
+// Kagura Layer 2 (`kagura.stage`):
+// 2D Game Camera, Easing & Keyframe Tracks, Hit-Stop Time Dilation,
+// 2-Bone Analytic Inverse Kinematics, Procedural Curves/Ribbons, and Particle System.
+
+use std.option.{Option, Some, None}
+use std.list.{listLen, listRev, listAppend, listMap}
+use kagura.gfx.{
+    Vec2, MkVec2, vec2, vAdd, vSub, vScale, vLen, vNorm, vLerp,
+    Rect, Color, withAlpha, DrawList,
+    sin, cos, acos, atan2, sqrt, exp, pi,
+    absFloat, minInt, maxInt, clampInt, minFloat, maxFloat, clampFloat, clamp01, lerpFloat,
+    drawCircle, pushTransform, popTransform
+}
+
+// ============================================================================
+// 1. 2D Camera (`Camera2D`) with Frame-Rate-Independent Spring & Trauma Shake
+// ============================================================================
+
+pub data Camera2D {
+    MkCamera2D {
+        camX: Float,
+        camY: Float,
+        camTargetX: Float,
+        camTargetY: Float,
+        camZoom: Float,
+        camMinZoom: Float,
+        camMaxZoom: Float,
+        camTrauma: Float,
+        camClockSec: Float,
+    },
+}
+
+pub def cameraNew(x: Float, y: Float, zoom: Float): Camera2D = MkCamera2D {
+    camX: x,
+    camY: y,
+    camTargetX: x,
+    camTargetY: y,
+    camZoom: clampFloat(0.2, 5.0, zoom),
+    camMinZoom: 0.4,
+    camMaxZoom: 2.5,
+    camTrauma: 0.0,
+    camClockSec: 0.0,
+}
+
+pub def cameraSetTarget(c: Camera2D, tx: Float, ty: Float): Camera2D = MkCamera2D {
+    camX: c.camX, camY: c.camY,
+    camTargetX: tx, camTargetY: ty,
+    camZoom: c.camZoom, camMinZoom: c.camMinZoom, camMaxZoom: c.camMaxZoom,
+    camTrauma: c.camTrauma, camClockSec: c.camClockSec,
+}
+
+pub def cameraSnap(c: Camera2D, x: Float, y: Float): Camera2D = MkCamera2D {
+    camX: x, camY: y,
+    camTargetX: x, camTargetY: y,
+    camZoom: c.camZoom, camMinZoom: c.camMinZoom, camMaxZoom: c.camMaxZoom,
+    camTrauma: c.camTrauma, camClockSec: c.camClockSec,
+}
+
+pub def cameraPan(c: Camera2D, dxScreen: Float, dyScreen: Float): Camera2D = {
+    let invZ = 1.0 / maxFloat(0.05, c.camZoom);
+    let nx = c.camTargetX - dxScreen * invZ;
+    let ny = c.camTargetY - dyScreen * invZ;
+    MkCamera2D {
+        camX: c.camX - dxScreen * invZ,
+        camY: c.camY - dyScreen * invZ,
+        camTargetX: nx,
+        camTargetY: ny,
+        camZoom: c.camZoom, camMinZoom: c.camMinZoom, camMaxZoom: c.camMaxZoom,
+        camTrauma: c.camTrauma, camClockSec: c.camClockSec,
+    }
+}
+
+pub def cameraZoomBy(c: Camera2D, factor: Float): Camera2D = MkCamera2D {
+    camX: c.camX, camY: c.camY,
+    camTargetX: c.camTargetX, camTargetY: c.camTargetY,
+    camZoom: clampFloat(c.camMinZoom, c.camMaxZoom, c.camZoom * factor),
+    camMinZoom: c.camMinZoom, camMaxZoom: c.camMaxZoom,
+    camTrauma: c.camTrauma, camClockSec: c.camClockSec,
+}
+
+pub def cameraAddTrauma(c: Camera2D, delta: Float): Camera2D = MkCamera2D {
+    camX: c.camX, camY: c.camY,
+    camTargetX: c.camTargetX, camTargetY: c.camTargetY,
+    camZoom: c.camZoom, camMinZoom: c.camMinZoom, camMaxZoom: c.camMaxZoom,
+    camTrauma: clamp01(c.camTrauma + maxFloat(0.0, delta)),
+    camClockSec: c.camClockSec,
+}
+
+pub def cameraStep(c: Camera2D, dtSec: Float, stiffness: Float, reducedMotion: Bool): Camera2D = {
+    let dt = clampFloat(0.0, 0.25, dtSec);
+    let alpha = if (reducedMotion) 1.0 else 1.0 - exp((0.0 - maxFloat(0.5, stiffness)) * dt);
+    let nextTrauma = if (reducedMotion) 0.0 else maxFloat(0.0, c.camTrauma - dt * 1.8);
+    MkCamera2D {
+        camX: lerpFloat(c.camX, c.camTargetX, alpha),
+        camY: lerpFloat(c.camY, c.camTargetY, alpha),
+        camTargetX: c.camTargetX,
+        camTargetY: c.camTargetY,
+        camZoom: c.camZoom,
+        camMinZoom: c.camMinZoom,
+        camMaxZoom: c.camMaxZoom,
+        camTrauma: nextTrauma,
+        camClockSec: c.camClockSec + dt,
+    }
+}
+
+pub def cameraShakeOffset(c: Camera2D, reducedMotion: Bool): Vec2 =
+    if (reducedMotion || c.camTrauma <= 0.001) vec2(0.0, 0.0)
+    else {
+        let mag = c.camTrauma * c.camTrauma * 14.0;
+        let t = c.camClockSec;
+        vec2(sin(t * 47.0) * mag, cos(t * 61.0 + 0.9) * mag * 0.75)
+    }
+
+pub def worldToScreen(c: Camera2D, vp: Rect, worldPt: Vec2, reducedMotion: Bool): Vec2 = {
+    let shake = cameraShakeOffset(c, reducedMotion);
+    let cx = vp.rx + vp.rw * 0.5 + shake.vx;
+    let cy = vp.ry + vp.rh * 0.5 + shake.vy;
+    vec2(
+        cx + (worldPt.vx - c.camX) * c.camZoom,
+        cy + (worldPt.vy - c.camY) * c.camZoom
+    )
+}
+
+pub def screenToWorld(c: Camera2D, vp: Rect, screenPt: Vec2, reducedMotion: Bool): Vec2 = {
+    let shake = cameraShakeOffset(c, reducedMotion);
+    let cx = vp.rx + vp.rw * 0.5 + shake.vx;
+    let cy = vp.ry + vp.rh * 0.5 + shake.vy;
+    let invZ = 1.0 / maxFloat(0.05, c.camZoom);
+    vec2(
+        c.camX + (screenPt.vx - cx) * invZ,
+        c.camY + (screenPt.vy - cy) * invZ
+    )
+}
+
+pub def withCameraTransform(dl: DrawList, c: Camera2D, vp: Rect, reducedMotion: Bool, drawWorld: () -> Void): Void = {
+    let shake = cameraShakeOffset(c, reducedMotion);
+    let cx = vp.rx + vp.rw * 0.5 + shake.vx;
+    let cy = vp.ry + vp.rh * 0.5 + shake.vy;
+    pushTransform(dl, cx - c.camX * c.camZoom, cy - c.camY * c.camZoom, c.camZoom, c.camZoom, 0.0);
+    drawWorld();
+    popTransform(dl)
+}
+
+// ============================================================================
+// 2. Easing Curves, Keyframe Tracks & Hit-Stop Time Dilation
+// ============================================================================
+
+pub data Ease {
+    EaseStep,
+    EaseLinear,
+    EaseInQuad,
+    EaseOutQuad,
+    EaseInOutCubic,
+    EaseOutBack,
+}
+
+pub def applyEase(e: Ease, rawT: Float): Float = {
+    let t = clamp01(rawT);
+    match e {
+        EaseStep -> if (t < 1.0) 0.0 else 1.0,
+        EaseLinear -> t,
+        EaseInQuad -> t * t,
+        EaseOutQuad -> 1.0 - (1.0 - t) * (1.0 - t),
+        EaseInOutCubic ->
+            if (t < 0.5) 4.0 * t * t * t
+            else {
+                let u = -2.0 * t + 2.0;
+                1.0 - (u * u * u) * 0.5
+            },
+        EaseOutBack -> {
+            let c1 = 1.70158;
+            let c3 = c1 + 1.0;
+            let u = t - 1.0;
+            1.0 + c3 * u * u * u + c1 * u * u
+        },
+    }
+}
+
+pub data Keyframe {
+    MkKeyframe {
+        kfTimeMs: Float,
+        kfValue: Float,
+        kfEase: Ease,
+    },
+}
+
+pub def kf(timeMs: Float, value: Float, ease: Ease): Keyframe =
+    MkKeyframe { kfTimeMs: timeMs, kfValue: value, kfEase: ease }
+
+pub def sampleFloatTrack(keys: List Keyframe, tMs: Float, fallback: Float): Float = match keys {
+    Nil -> fallback,
+    Cons(first, rest) ->
+        if (tMs <= first.kfTimeMs) first.kfValue
+        else {
+            let prevCell = cellNew(first);
+            let cur = cellNew(rest);
+            let outOpt: Cell (Option Float) = cellNew(None);
+            while (match cellGet(cur) { Nil -> false, _ -> match cellGet(outOpt) { None -> true, Some(_) -> false } }) {
+                match cellGet(cur) {
+                    Cons(k, r) -> {
+                        if (tMs <= k.kfTimeMs) {
+                            let prev = cellGet(prevCell);
+                            let span = maxFloat(0.0001, k.kfTimeMs - prev.kfTimeMs);
+                            let u = applyEase(k.kfEase, (tMs - prev.kfTimeMs) / span);
+                            cellSet(outOpt, Some(lerpFloat(prev.kfValue, k.kfValue, u)))
+                        } else {
+                            cellSet(prevCell, k);
+                            cellSet(cur, r)
+                        }
+                    },
+                    Nil -> (),
+                }
+            };
+            match cellGet(outOpt) {
+                Some(v) -> v,
+                None -> cellGet(prevCell).kfValue,
+            }
+        },
+}
+
+pub data Vec2Key {
+    MkVec2Key {
+        vkTimeMs: Float,
+        vkPos: Vec2,
+        vkEase: Ease,
+    },
+}
+
+pub def vec2Key(timeMs: Float, pos: Vec2, ease: Ease): Vec2Key =
+    MkVec2Key { vkTimeMs: timeMs, vkPos: pos, vkEase: ease }
+
+pub def sampleVec2Track(keys: List Vec2Key, tMs: Float, fallback: Vec2): Vec2 = match keys {
+    Nil -> fallback,
+    Cons(first, rest) ->
+        if (tMs <= first.vkTimeMs) first.vkPos
+        else {
+            let prevCell = cellNew(first);
+            let cur = cellNew(rest);
+            let outOpt: Cell (Option Vec2) = cellNew(None);
+            while (match cellGet(cur) { Nil -> false, _ -> match cellGet(outOpt) { None -> true, Some(_) -> false } }) {
+                match cellGet(cur) {
+                    Cons(k, r) -> {
+                        if (tMs <= k.vkTimeMs) {
+                            let prev = cellGet(prevCell);
+                            let span = maxFloat(0.0001, k.vkTimeMs - prev.vkTimeMs);
+                            let u = applyEase(k.vkEase, (tMs - prev.vkTimeMs) / span);
+                            cellSet(outOpt, Some(vLerp(prev.vkPos, k.vkPos, u)))
+                        } else {
+                            cellSet(prevCell, k);
+                            cellSet(cur, r)
+                        }
+                    },
+                    Nil -> (),
+                }
+            };
+            match cellGet(outOpt) {
+                Some(v) -> v,
+                None -> cellGet(prevCell).vkPos,
+            }
+        },
+}
+
+pub data HitStopWindow {
+    MkHitStopWindow {
+        hsStartMs: Float,
+        hsDurationMs: Float,
+    },
+}
+
+pub def hitStop(startMs: Float, durationMs: Float): HitStopWindow =
+    MkHitStopWindow { hsStartMs: startMs, hsDurationMs: maxFloat(0.0, durationMs) }
+
+// Maps wall-clock `elapsedMs` to `(visualTimeMs, isCurrentlyFrozen)` across sorted hit-stop windows
+pub def visualTimeWithHitStops(windows: List HitStopWindow, elapsedMs: Float): (Float, Bool) = {
+    let vis = cellNew(maxFloat(0.0, elapsedMs));
+    let frozen = cellNew(false);
+    let cur = cellNew(windows);
+    let stop = cellNew(false);
+    while (match cellGet(cur) { Nil -> false, _ -> !cellGet(stop) }) {
+        match cellGet(cur) {
+            Cons(w, rest) -> {
+                let vNow = cellGet(vis);
+                if (w.hsDurationMs <= 0.0 || vNow <= w.hsStartMs) {
+                    cellSet(stop, true)
+                } else if (vNow <= w.hsStartMs + w.hsDurationMs) {
+                    cellSet(vis, w.hsStartMs);
+                    cellSet(frozen, true);
+                    cellSet(stop, true)
+                } else {
+                    cellSet(vis, vNow - w.hsDurationMs);
+                    cellSet(cur, rest)
+                }
+            },
+            Nil -> (),
+        }
+    };
+    (cellGet(vis), cellGet(frozen))
+}
+
+// ============================================================================
+// 3. 2-Bone Analytic Inverse Kinematics & Procedural Curves/Ribbons
+// ============================================================================
+
+pub def solveTwoBoneIk(origin: Vec2, target: Vec2, len1: Float, len2: Float, bendSign: Float): (Vec2, Vec2) = {
+    let dx = target.vx - origin.vx;
+    let dy = target.vy - origin.vy;
+    let rawDist = sqrt(dx * dx + dy * dy);
+    let minReach = absFloat(len1 - len2) + 0.0001;
+    let maxReach = maxFloat(minReach, len1 + len2 - 0.0001);
+    let d = clampFloat(minReach, maxReach, maxFloat(0.0001, rawDist));
+    let baseAngle = if (rawDist < 0.0001) 0.0 else atan2(dy, dx);
+    let cosArg = clampFloat(-1.0, 1.0, (len1 * len1 + d * d - len2 * len2) / (2.0 * maxFloat(0.0001, len1 * d)));
+    let sign = if (bendSign < 0.0) -1.0 else 1.0;
+    let theta1 = baseAngle + sign * acos(cosArg);
+    let joint = vec2(origin.vx + cos(theta1) * len1, origin.vy + sin(theta1) * len1);
+    let endPt =
+        if (rawDist <= len1 + len2 && rawDist >= absFloat(len1 - len2)) target
+        else vec2(origin.vx + cos(baseAngle) * d, origin.vy + sin(baseAngle) * d);
+    (joint, endPt)
+}
+
+pub def cubicBezierPoint(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, rawT: Float): Vec2 = {
+    let t = clamp01(rawT);
+    let u = 1.0 - t;
+    let b0 = u * u * u;
+    let b1 = 3.0 * u * u * t;
+    let b2 = 3.0 * u * t * t;
+    let b3 = t * t * t;
+    vec2(
+        b0 * p0.vx + b1 * p1.vx + b2 * p2.vx + b3 * p3.vx,
+        b0 * p0.vy + b1 * p1.vy + b2 * p2.vy + b3 * p3.vy
+    )
+}
+
+pub def sampleCubicBezier(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, segments: Int): List Vec2 = {
+    let n = maxInt(2, segments);
+    let outRev: Cell (List Vec2) = cellNew(Nil);
+    let i = cellNew(0);
+    while (cellGet(i) <= n) {
+        let idx = cellGet(i);
+        let t = intToFloat(idx) / intToFloat(n);
+        cellSet(outRev, Cons(cubicBezierPoint(p0, p1, p2, p3, t), cellGet(outRev)));
+        cellSet(i, idx + 1)
+    };
+    listRev(cellGet(outRev))
+}
+
+def vecNthClamped(arr: MutArray Vec2, idx: Int): Vec2 =
+    arrayGet(arr, clampInt(0, arrayLen(arr) - 1, idx))
+
+pub def sampleCatmullRom(pts: List Vec2, subdivsPerSeg: Int): List Vec2 = {
+    let n = listLen(pts);
+    if (n <= 2) pts
+    else {
+        let arr = arrayNew(n, vec2(0.0, 0.0));
+        let k = cellNew(0);
+        let cur = cellNew(pts);
+        while (match cellGet(cur) { Nil -> false, _ -> true }) {
+            match cellGet(cur) {
+                Cons(p, rest) -> {
+                    arraySet(arr, cellGet(k), p);
+                    cellSet(k, cellGet(k) + 1);
+                    cellSet(cur, rest)
+                },
+                Nil -> (),
+            }
+        };
+        let subs = maxInt(2, subdivsPerSeg);
+        let outRev: Cell (List Vec2) = cellNew(Nil);
+        let seg = cellNew(0);
+        while (cellGet(seg) < n - 1) {
+            let s = cellGet(seg);
+            let p0 = vecNthClamped(arr, s - 1);
+            let p1 = vecNthClamped(arr, s);
+            let p2 = vecNthClamped(arr, s + 1);
+            let p3 = vecNthClamped(arr, s + 2);
+            let stepIdx = cellNew(0);
+            let maxStep = if (s == n - 2) subs else subs - 1;
+            while (cellGet(stepIdx) <= maxStep) {
+                let st = cellGet(stepIdx);
+                let t = intToFloat(st) / intToFloat(subs);
+                let t2 = t * t;
+                let t3 = t2 * t;
+                let rx = 0.5 * ((2.0 * p1.vx)
+                    + (0.0 - p0.vx + p2.vx) * t
+                    + (2.0 * p0.vx - 5.0 * p1.vx + 4.0 * p2.vx - p3.vx) * t2
+                    + (0.0 - p0.vx + 3.0 * p1.vx - 3.0 * p2.vx + p3.vx) * t3);
+                let ry = 0.5 * ((2.0 * p1.vy)
+                    + (0.0 - p0.vy + p2.vy) * t
+                    + (2.0 * p0.vy - 5.0 * p1.vy + 4.0 * p2.vy - p3.vy) * t2
+                    + (0.0 - p0.vy + 3.0 * p1.vy - 3.0 * p2.vy + p3.vy) * t3);
+                cellSet(outRev, Cons(vec2(rx, ry), cellGet(outRev)));
+                cellSet(stepIdx, st + 1)
+            };
+            cellSet(seg, s + 1)
+        };
+        listRev(cellGet(outRev))
+    }
+}
+
+pub def buildTaperedPolygon(centerline: List Vec2, startHalfW: Float, endHalfW: Float): List Vec2 = {
+    let n = listLen(centerline);
+    if (n < 2) Nil
+    else {
+        let arr = arrayNew(n, vec2(0.0, 0.0));
+        let k = cellNew(0);
+        let cur = cellNew(centerline);
+        while (match cellGet(cur) { Nil -> false, _ -> true }) {
+            match cellGet(cur) {
+                Cons(p, rest) -> {
+                    arraySet(arr, cellGet(k), p);
+                    cellSet(k, cellGet(k) + 1);
+                    cellSet(cur, rest)
+                },
+                Nil -> (),
+            }
+        };
+        let leftRev: Cell (List Vec2) = cellNew(Nil);
+        let rightList: Cell (List Vec2) = cellNew(Nil);
+        let i = cellNew(0);
+        while (cellGet(i) < n) {
+            let idx = cellGet(i);
+            let pPrev = vecNthClamped(arr, idx - 1);
+            let pCur = vecNthClamped(arr, idx);
+            let pNext = vecNthClamped(arr, idx + 1);
+            let tang = vNorm(vSub(pNext, pPrev));
+            let norm = vec2(0.0 - tang.vy, tang.vx);
+            let u = intToFloat(idx) / intToFloat(maxInt(1, n - 1));
+            let hw = lerpFloat(startHalfW, endHalfW, u);
+            cellSet(leftRev, Cons(vAdd(pCur, vScale(norm, hw)), cellGet(leftRev)));
+            cellSet(rightList, Cons(vSub(pCur, vScale(norm, hw)), cellGet(rightList)));
+            cellSet(i, idx + 1)
+        };
+        listAppend(listRev(cellGet(leftRev)), cellGet(rightList))
+    }
+}
+
+// ============================================================================
+// 4. Lightweight Deterministic 2D Particle System
+// ============================================================================
+
+pub data Particle2D {
+    MkParticle2D {
+        ptPos: Vec2,
+        ptVel: Vec2,
+        ptRadius: Float,
+        ptAge: Float,
+        ptLife: Float,
+        ptDrag: Float,
+        ptGravity: Float,
+        ptColor: Color,
+    },
+}
+
+pub data BurstConfig {
+    MkBurstConfig {
+        bcOrigin: Vec2,
+        bcCount: Int,
+        bcBaseAngleRad: Float,
+        bcSpreadRad: Float,
+        bcMinSpeed: Float,
+        bcMaxSpeed: Float,
+        bcMinRadius: Float,
+        bcMaxRadius: Float,
+        bcLifeSec: Float,
+        bcDrag: Float,
+        bcGravity: Float,
+        bcColor: Color,
+        bcSeed: Int,
+    },
+}
+
+def hash01(seed: Int, idx: Int, salt: Int): Float = {
+    let h0 = (seed * 1103515245 + idx * 12345 + salt * 1640531527) & 2147483647;
+    let h1 = ((h0 >>> 11) ^ h0) & 1048575;
+    intToFloat(h1) / 1048575.0
+}
+
+pub def spawnBurst2D(cfg: BurstConfig): List Particle2D = {
+    let count = clampInt(0, 256, cfg.bcCount);
+    let outRev: Cell (List Particle2D) = cellNew(Nil);
+    let i = cellNew(0);
+    while (cellGet(i) < count) {
+        let idx = cellGet(i);
+        let rAng = hash01(cfg.bcSeed, idx, 1) - 0.5;
+        let rSpd = hash01(cfg.bcSeed, idx, 2);
+        let rRad = hash01(cfg.bcSeed, idx, 3);
+        let rLife = 0.75 + 0.5 * hash01(cfg.bcSeed, idx, 4);
+        let ang = cfg.bcBaseAngleRad + rAng * cfg.bcSpreadRad;
+        let spd = lerpFloat(cfg.bcMinSpeed, cfg.bcMaxSpeed, rSpd);
+        let p = MkParticle2D {
+            ptPos: cfg.bcOrigin,
+            ptVel: vec2(cos(ang) * spd, sin(ang) * spd),
+            ptRadius: lerpFloat(cfg.bcMinRadius, cfg.bcMaxRadius, rRad),
+            ptAge: 0.0,
+            ptLife: maxFloat(0.05, cfg.bcLifeSec * rLife),
+            ptDrag: cfg.bcDrag,
+            ptGravity: cfg.bcGravity,
+            ptColor: cfg.bcColor,
+        };
+        cellSet(outRev, Cons(p, cellGet(outRev)));
+        cellSet(i, idx + 1)
+    };
+    listRev(cellGet(outRev))
+}
+
+pub def stepParticles2D(ps: List Particle2D, dtSec: Float): List Particle2D = {
+    let dt = clampFloat(0.0, 0.1, dtSec);
+    let damp = maxFloat(0.0, 1.0 - 3.0 * dt);
+    let outRev: Cell (List Particle2D) = cellNew(Nil);
+    let cur = cellNew(ps);
+    while (match cellGet(cur) { Nil -> false, _ -> true }) {
+        match cellGet(cur) {
+            Cons(p, rest) -> {
+                let nextAge = p.ptAge + dt;
+                if (nextAge < p.ptLife) {
+                    let dragMul = maxFloat(0.0, 1.0 - p.ptDrag * dt);
+                    let nvx = p.ptVel.vx * (if (p.ptDrag > 0.0) dragMul else damp);
+                    let nvy = p.ptVel.vy * (if (p.ptDrag > 0.0) dragMul else damp) + p.ptGravity * dt;
+                    cellSet(outRev, Cons(MkParticle2D {
+                        ptPos: vec2(p.ptPos.vx + p.ptVel.vx * dt, p.ptPos.vy + p.ptVel.vy * dt),
+                        ptVel: vec2(nvx, nvy),
+                        ptRadius: p.ptRadius,
+                        ptAge: nextAge,
+                        ptLife: p.ptLife,
+                        ptDrag: p.ptDrag,
+                        ptGravity: p.ptGravity,
+                        ptColor: p.ptColor,
+                    }, cellGet(outRev)))
+                } else ();
+                cellSet(cur, rest)
+            },
+            Nil -> (),
+        }
+    };
+    listRev(cellGet(outRev))
+}
+
+pub def drawParticles2D(dl: DrawList, ps: List Particle2D): Void = {
+    let cur = cellNew(ps);
+    while (match cellGet(cur) { Nil -> false, _ -> true }) {
+        match cellGet(cur) {
+            Cons(p, rest) -> {
+                let rem = clamp01(1.0 - p.ptAge / maxFloat(0.01, p.ptLife));
+                let r = p.ptRadius * (0.45 + 0.55 * rem);
+                drawCircle(dl, p.ptPos.vx, p.ptPos.vy, r, withAlpha(p.ptColor, rem * 0.9), 0, 0.0);
+                cellSet(cur, rest)
+            },
+            Nil -> (),
+        }
+    }
+}

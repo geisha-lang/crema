@@ -1,0 +1,13 @@
+// Kagura (神楽) — Declarative UI & 2D Game Stage Framework for Geisha (`kagura`).
+//
+// Layers:
+// - `kagura.gfx`   : 8-byte word-aligned binary `DrawList`, RGBA colors, CJK typography & 2D geometry
+// - `kagura.ui`    : Clay-inspired Flexbox / ZStack / ScrollView layout & `Functor Element` widgets
+// - `kagura.stage` : `Camera2D`, keyframe/hit-stop timelines, 2-Bone analytic IK, ribbons & particles
+// - `kagura.app`   : TEA pure functional application runtime (dirty-driven UI + 60fps game loop)
+
+pub mod gfx
+pub mod ui
+pub mod stage
+pub mod app
+pub mod host

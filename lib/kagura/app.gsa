@@ -1,0 +1,430 @@
+// Kagura Layer 3 (`kagura.app`):
+// TEA (The Elm Architecture) pure state runtime (`AppConfig model msg`),
+// `Functor Cmd`, pluggable `HostBridge` (headless or native/web FFI),
+// automatic scroll/hover/focus/IME management, and dirty-driven / 60fps host loop.
+
+use std.option.{Option, Some, None}
+use std.list.{listAppend, listMap}
+use std.map.{StrMap, strMapNew, strMapGet, strMapInsert}
+use std.control.{Functor, fmap}
+use kagura.gfx.{
+    Vec2, vec2, Rect, rect, colorR, maxFloat, clampFloat,
+    DrawList, drawListWithCap, dlClear, dlWordCount, dlStrCount,
+    dlRawWords, dlRawStrs, drawClearBg, emitImeClear
+}
+use kagura.ui.{
+    Theme, Element,
+    UiHitAction, ActClick, ActFocusInput, ActSwallow,
+    PlacedHitbox, PlacedScroll, UiFrameCtx, MkUiFrameCtx,
+    renderUiRoot, hitTestUi, findScrollZoneAt
+}
+
+// ============================================================================
+// 1. Pluggable Cross-Platform `HostBridge` (Zero-FFI `headlessHost` + `kagura.host.envHost`)
+// ============================================================================
+
+pub data HostBridge {
+    MkHostBridge {
+        hbPresent: (MutArray Int64, Int, MutArray String, Int) -> Void,
+        hbSetCursor: String -> Void,
+        hbFocusIme: (String, String, Float, Float, Float, Float) -> Void,
+        hbBlurIme: () -> Void,
+        hbPlaySfx: String -> Void,
+        hbSaveLocal: (String, String) -> Void,
+        hbSendNet: String -> Void,
+        hbConnectNet: (String, String, String) -> Void,
+    },
+}
+
+pub def headlessHost(): HostBridge = MkHostBridge {
+    hbPresent: (_w, _wc, _s, _sc) -> (),
+    hbSetCursor: (_c) -> (),
+    hbFocusIme: (_id, _v, _x, _y, _w, _h) -> (),
+    hbBlurIme: () -> (),
+    hbPlaySfx: (_s) -> (),
+    hbSaveLocal: (_k, _v) -> (),
+    hbSendNet: (_p) -> (),
+    hbConnectNet: (_m, _u, _t) -> (),
+}
+
+// ============================================================================
+// 2. Side-Effect Commands (`Cmd msg`) with `Functor`
+// ============================================================================
+
+pub data Cmd msg {
+    CmdNone,
+    CmdBatch(List (Cmd msg)),
+    CmdEmit(msg),
+    CmdPlaySfx(String),
+    CmdSaveLocal(String, String),
+    CmdSendNet(String),
+    CmdConnectNet(String, String, String),
+}
+
+pub def mapCmd(f: a -> b, cmd: Cmd a): Cmd b = match cmd {
+    CmdNone -> CmdNone,
+    CmdBatch(cs) -> CmdBatch(listMap(cs, (c) -> mapCmd(f, c))),
+    CmdEmit(m) -> CmdEmit(f(m)),
+    CmdPlaySfx(s) -> CmdPlaySfx(s),
+    CmdSaveLocal(k, v) -> CmdSaveLocal(k, v),
+    CmdSendNet(p) -> CmdSendNet(p),
+    CmdConnectNet(m, u, t) -> CmdConnectNet(m, u, t),
+}
+
+instance Functor Cmd {
+    def fmap(f, cmd) = mapCmd(f, cmd)
+}
+
+pub def cmdNone(): Cmd msg = CmdNone
+pub def cmdBatch(cs: List (Cmd msg)): Cmd msg = CmdBatch(cs)
+
+// ============================================================================
+// 3. Declarative `AppConfig model msg` & Managed `Runtime model msg`
+// ============================================================================
+
+pub data AppConfig model msg {
+    MkAppConfig {
+        appTheme: Theme,
+        appDynamicTheme: Option (model -> Theme),
+        appPaperGrain: Bool,
+        appInit: Rect -> (model, Cmd msg),
+        appUpdate: (msg, model) -> (model, Cmd msg),
+        appView: (Rect, model) -> Element msg,
+        appTick: Option ((Float, Rect, model) -> (model, Cmd msg)),
+        appOnKey: Option (String -> Option msg),
+        appOnNetOpen: Option (String -> Option msg),
+        appOnNetMessage: Option (String -> Option msg),
+        appOnNetClose: Option msg,
+    },
+}
+
+pub def basicUiApp(
+    theme: Theme,
+    initFn: Rect -> (model, Cmd msg),
+    updateFn: (msg, model) -> (model, Cmd msg),
+    viewFn: (Rect, model) -> Element msg
+): AppConfig model msg = MkAppConfig {
+    appTheme: theme,
+    appDynamicTheme: None,
+    appPaperGrain: true,
+    appInit: initFn,
+    appUpdate: updateFn,
+    appView: viewFn,
+    appTick: None,
+    appOnKey: None,
+    appOnNetOpen: None,
+    appOnNetMessage: None,
+    appOnNetClose: None,
+}
+
+pub def realtimeGameApp(
+    theme: Theme,
+    initFn: Rect -> (model, Cmd msg),
+    updateFn: (msg, model) -> (model, Cmd msg),
+    tickFn: (Float, Rect, model) -> (model, Cmd msg),
+    viewFn: (Rect, model) -> Element msg
+): AppConfig model msg = MkAppConfig {
+    appTheme: theme,
+    appDynamicTheme: None,
+    appPaperGrain: true,
+    appInit: initFn,
+    appUpdate: updateFn,
+    appTick: Some(tickFn),
+    appView: viewFn,
+    appOnKey: None,
+    appOnNetOpen: None,
+    appOnNetMessage: None,
+    appOnNetClose: None,
+}
+
+pub data Runtime model msg {
+    MkRuntime {
+        rtCfg: AppConfig model msg,
+        rtHost: HostBridge,
+        rtModel: Cell model,
+        rtDrawList: DrawList,
+        rtViewport: Cell Rect,
+        rtPointer: Cell Vec2,
+        rtPointerDown: Cell Bool,
+        rtHoveredKey: Cell String,
+        rtLastCursor: Cell String,
+        rtFocusedInput: Cell String,
+        rtInputHandler: Cell (Option (String -> msg)),
+        rtSubmitMsg: Cell (Option msg),
+        rtScrollOffsets: StrMap Float,
+        rtHits: Cell (List (PlacedHitbox msg)),
+        rtScrolls: Cell (List PlacedScroll),
+        rtDirty: Cell Bool,
+    },
+}
+
+// Stack-safe iterative command queue runner (zero recursion, handles arbitrarily deep `CmdBatch` / `CmdEmit`)
+def runCmdQueue(rt: Runtime model msg, firstCmd: Cmd msg): Void = {
+    let queue: Cell (List (Cmd msg)) = cellNew([firstCmd]);
+    while (match cellGet(queue) { Nil -> false, _ -> true }) {
+        match cellGet(queue) {
+            Cons(cmd, rest) -> {
+                cellSet(queue, rest);
+                match cmd {
+                    CmdNone -> (),
+                    CmdBatch(cs) -> cellSet(queue, listAppend(cs, cellGet(queue))),
+                    CmdEmit(m) -> {
+                        let (mNext, nextCmd) = rt.rtCfg.appUpdate(m, cellGet(rt.rtModel));
+                        cellSet(rt.rtModel, mNext);
+                        cellSet(rt.rtDirty, true);
+                        cellSet(queue, listAppend(cellGet(queue), [nextCmd]))
+                    },
+                    CmdPlaySfx(sfx) -> rt.rtHost.hbPlaySfx(sfx),
+                    CmdSaveLocal(k, v) -> rt.rtHost.hbSaveLocal(k, v),
+                    CmdSendNet(p) -> rt.rtHost.hbSendNet(p),
+                    CmdConnectNet(mode, u, tok) -> rt.rtHost.hbConnectNet(mode, u, tok),
+                }
+            },
+            Nil -> (),
+        }
+    }
+}
+
+pub def rtDispatch(rt: Runtime model msg, actionMsg: msg): Void = {
+    let (mNext, cmd) = rt.rtCfg.appUpdate(actionMsg, cellGet(rt.rtModel));
+    cellSet(rt.rtModel, mNext);
+    cellSet(rt.rtDirty, true);
+    runCmdQueue(rt, cmd)
+}
+
+pub def runtimeCreate(cfg: AppConfig model msg, width: Float, height: Float, host: HostBridge): Runtime model msg = {
+    let vp = rect(0.0, 0.0, maxFloat(240.0, width), maxFloat(180.0, height));
+    let (m0, initCmd) = cfg.appInit(vp);
+    let rt = MkRuntime {
+        rtCfg: cfg,
+        rtHost: host,
+        rtModel: cellNew(m0),
+        rtDrawList: drawListWithCap(2048, 128),
+        rtViewport: cellNew(vp),
+        rtPointer: cellNew(vec2(-9999.0, -9999.0)),
+        rtPointerDown: cellNew(false),
+        rtHoveredKey: cellNew(""),
+        rtLastCursor: cellNew("default"),
+        rtFocusedInput: cellNew(""),
+        rtInputHandler: cellNew(None),
+        rtSubmitMsg: cellNew(None),
+        rtScrollOffsets: strMapNew(),
+        rtHits: cellNew(Nil),
+        rtScrolls: cellNew(Nil),
+        rtDirty: cellNew(true),
+    };
+    runCmdQueue(rt, initCmd);
+    rt
+}
+
+pub def rtModel(rt: Runtime model msg): model = cellGet(rt.rtModel)
+pub def rtDrawList(rt: Runtime model msg): DrawList = rt.rtDrawList
+pub def rtIsDirty(rt: Runtime model msg): Bool = cellGet(rt.rtDirty)
+
+// Renders current view into `rt.rtDrawList` and updates hitboxes/scroll bounds
+pub def rtRenderOffscreen(rt: Runtime model msg): DrawList = {
+    let dl = rt.rtDrawList;
+    dlClear(dl);
+    let vp = cellGet(rt.rtViewport);
+    let curModel = cellGet(rt.rtModel);
+    let th = match rt.rtCfg.appDynamicTheme {
+        Some(tf) -> tf(curModel),
+        None -> rt.rtCfg.appTheme,
+    };
+    let showGrain = rt.rtCfg.appPaperGrain && (colorR(th.thBgTop) > 80);
+    drawClearBg(dl, th.thBgTop, th.thBgMid, th.thBgBot, true, showGrain);
+
+    let fctx = MkUiFrameCtx {
+        ufViewport: vp,
+        ufPointer: cellGet(rt.rtPointer),
+        ufPointerDown: cellGet(rt.rtPointerDown),
+        ufHoveredKey: cellGet(rt.rtHoveredKey),
+        ufFocusedInput: cellGet(rt.rtFocusedInput),
+        ufScrolls: rt.rtScrollOffsets,
+    };
+    let rootEl = rt.rtCfg.appView(vp, curModel);
+    let out = renderUiRoot(rootEl, fctx, dl);
+    match out.urActiveIme {
+        Some(_) -> (),
+        None -> emitImeClear(dl),
+    };
+
+    // Clamp stored scroll offsets to newly computed `psMaxScroll`
+    let sCur = cellNew(out.urScrolls);
+    while (match cellGet(sCur) { Nil -> false, _ -> true }) {
+        match cellGet(sCur) {
+            Cons(sz, rest) -> {
+                match strMapGet(rt.rtScrollOffsets, sz.psId) {
+                    Some(curOff) ->
+                        if (curOff > sz.psMaxScroll) strMapInsert(rt.rtScrollOffsets, sz.psId, sz.psMaxScroll)
+                        else (),
+                    None -> (),
+                };
+                cellSet(sCur, rest)
+            },
+            Nil -> (),
+        }
+    };
+
+    cellSet(rt.rtHits, out.urHits);
+    cellSet(rt.rtScrolls, out.urScrolls);
+    cellSet(rt.rtDirty, false);
+    dl
+}
+
+// Steps frame simulation (if `appTick` is `Some`), skips rendering if clean in pure-UI mode, and presents via `rtHost`
+pub def rtStepFrame(rt: Runtime model msg, dtMs: Float, width: Float, height: Float): Bool = {
+    let prevVp = cellGet(rt.rtViewport);
+    let nw = maxFloat(240.0, width);
+    let nh = maxFloat(180.0, height);
+    if (nw != prevVp.rw || nh != prevVp.rh) {
+        cellSet(rt.rtViewport, rect(0.0, 0.0, nw, nh));
+        cellSet(rt.rtDirty, true)
+    } else ();
+
+    match rt.rtCfg.appTick {
+        Some(tickFn) -> {
+            let (m1, cmd) = tickFn(dtMs, cellGet(rt.rtViewport), cellGet(rt.rtModel));
+            cellSet(rt.rtModel, m1);
+            cellSet(rt.rtDirty, true);
+            runCmdQueue(rt, cmd)
+        },
+        None -> (),
+    };
+
+    if (!cellGet(rt.rtDirty)) false
+    else {
+        let dl = rtRenderOffscreen(rt);
+        rt.rtHost.hbPresent(dlRawWords(dl), dlWordCount(dl), dlRawStrs(dl), dlStrCount(dl));
+        true
+    }
+}
+
+pub def rtPointerMove(rt: Runtime model msg, x: Float, y: Float): Void = {
+    cellSet(rt.rtPointer, vec2(x, y));
+    let (nextKey, nextCur) = match hitTestUi(cellGet(rt.rtHits), x, y) {
+        Some(hb) -> (hb.phKey, hb.phCursor),
+        None -> ("", "default"),
+    };
+    if (nextKey != cellGet(rt.rtHoveredKey)) {
+        cellSet(rt.rtHoveredKey, nextKey);
+        cellSet(rt.rtDirty, true)
+    } else ();
+    if (nextCur != cellGet(rt.rtLastCursor)) {
+        cellSet(rt.rtLastCursor, nextCur);
+        rt.rtHost.hbSetCursor(nextCur)
+    } else ()
+}
+
+pub def rtPointerClick(rt: Runtime model msg, x: Float, y: Float): Void = {
+    cellSet(rt.rtPointer, vec2(x, y));
+    match hitTestUi(cellGet(rt.rtHits), x, y) {
+        None ->
+            if (strLen(cellGet(rt.rtFocusedInput)) > 0) {
+                cellSet(rt.rtFocusedInput, "");
+                cellSet(rt.rtInputHandler, None);
+                cellSet(rt.rtSubmitMsg, None);
+                cellSet(rt.rtDirty, true);
+                rt.rtHost.hbBlurIme()
+            } else (),
+        Some(hb) -> match hb.phAction {
+            ActClick(actionMsg) -> {
+                if (strLen(cellGet(rt.rtFocusedInput)) > 0) {
+                    cellSet(rt.rtFocusedInput, "");
+                    cellSet(rt.rtInputHandler, None);
+                    cellSet(rt.rtSubmitMsg, None);
+                    rt.rtHost.hbBlurIme()
+                } else ();
+                rtDispatch(rt, actionMsg)
+            },
+            ActFocusInput(inpId, curVal, r, onInp, mSub) -> {
+                cellSet(rt.rtFocusedInput, inpId);
+                cellSet(rt.rtInputHandler, Some(onInp));
+                cellSet(rt.rtSubmitMsg, mSub);
+                cellSet(rt.rtDirty, true);
+                rt.rtHost.hbFocusIme(inpId, curVal, r.rx, r.ry, r.rw, r.rh)
+            },
+            ActSwallow ->
+                if (strLen(cellGet(rt.rtFocusedInput)) > 0) {
+                    cellSet(rt.rtFocusedInput, "");
+                    cellSet(rt.rtInputHandler, None);
+                    cellSet(rt.rtSubmitMsg, None);
+                    cellSet(rt.rtDirty, true);
+                    rt.rtHost.hbBlurIme()
+                } else (),
+        },
+    }
+}
+
+pub def rtScrollWheel(rt: Runtime model msg, x: Float, y: Float, deltaY: Float): Void =
+    match findScrollZoneAt(cellGet(rt.rtScrolls), x, y) {
+        None -> (),
+        Some(sz) -> {
+            let prev = match strMapGet(rt.rtScrollOffsets, sz.psId) {
+                Some(v) -> v,
+                None -> 0.0,
+            };
+            let next = clampFloat(0.0, sz.psMaxScroll, prev + deltaY);
+            if (next != prev) {
+                strMapInsert(rt.rtScrollOffsets, sz.psId, next);
+                cellSet(rt.rtDirty, true)
+            } else ()
+        },
+    }
+
+pub def rtTextInput(rt: Runtime model msg, inputId: String, newVal: String): Void =
+    if (cellGet(rt.rtFocusedInput) == inputId) {
+        match cellGet(rt.rtInputHandler) {
+            Some(onInp) -> rtDispatch(rt, onInp(newVal)),
+            None -> (),
+        }
+    } else ()
+
+pub def rtTextSubmit(rt: Runtime model msg, inputId: String): Void =
+    if (cellGet(rt.rtFocusedInput) == inputId) {
+        match cellGet(rt.rtSubmitMsg) {
+            Some(subMsg) -> rtDispatch(rt, subMsg),
+            None -> (),
+        }
+    } else ()
+
+pub def rtBlurInput(rt: Runtime model msg): Void =
+    if (strLen(cellGet(rt.rtFocusedInput)) > 0) {
+        cellSet(rt.rtFocusedInput, "");
+        cellSet(rt.rtInputHandler, None);
+        cellSet(rt.rtSubmitMsg, None);
+        cellSet(rt.rtDirty, true)
+    } else ()
+
+pub def rtKeyDown(rt: Runtime model msg, key: String): Void =
+    match rt.rtCfg.appOnKey {
+        Some(keyFn) -> match keyFn(key) {
+            Some(m) -> rtDispatch(rt, m),
+            None -> (),
+        },
+        None -> (),
+    }
+
+pub def rtNetOpen(rt: Runtime model msg, mode: String): Void =
+    match rt.rtCfg.appOnNetOpen {
+        Some(fn) -> match fn(mode) {
+            Some(m) -> rtDispatch(rt, m),
+            None -> (),
+        },
+        None -> (),
+    }
+
+pub def rtNetMessage(rt: Runtime model msg, payload: String): Void =
+    match rt.rtCfg.appOnNetMessage {
+        Some(fn) -> match fn(payload) {
+            Some(m) -> rtDispatch(rt, m),
+            None -> (),
+        },
+        None -> (),
+    }
+
+pub def rtNetClose(rt: Runtime model msg): Void =
+    match rt.rtCfg.appOnNetClose {
+        Some(m) -> rtDispatch(rt, m),
+        None -> (),
+    }
