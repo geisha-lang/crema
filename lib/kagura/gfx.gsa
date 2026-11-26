@@ -303,6 +303,12 @@ pub def truncateWithEllipsis(font: FontSpec, maxW: Float, s: String): String =
         strSlice(s, 0, cellGet(cur)) + "…"
     }
 
+def isCjkNoBreakStart(cp: Int): Bool =
+    cp == 65292 || cp == 12290 || cp == 65281 || cp == 65311
+    || cp == 65307 || cp == 65306 || cp == 12289
+    || cp == 12301 || cp == 12303 || cp == 12305 || cp == 65289
+    || cp == 44 || cp == 46 || cp == 33 || cp == 63
+
 pub def wrapTextLines(font: FontSpec, maxW: Float, s: String): List String = {
     let limit = maxFloat(font.fsSize * 1.5, maxW);
     let isMono = match font.fsFamily { FontMono -> true, _ -> false };
@@ -323,7 +329,8 @@ pub def wrapTextLines(font: FontSpec, maxW: Float, s: String): List String = {
                 cellSet(cur, nextIdx)
             } else {
                 let cw = codepointWidthFactor(cp, isMono) * font.fsSize;
-                if (cellGet(curW) + cw > limit && idx > cellGet(lineStart)) {
+                let effLimit = if (isCjkNoBreakStart(cp)) limit + font.fsSize * 0.95 else limit;
+                if (cellGet(curW) + cw > effLimit && idx > cellGet(lineStart)) {
                     cellSet(linesRev, Cons(strSlice(s, cellGet(lineStart), idx), cellGet(linesRev)));
                     cellSet(lineStart, idx);
                     cellSet(curW, cw);
@@ -375,6 +382,7 @@ pub def opPushTransform(): Int = 12
 pub def opPopTransform(): Int = 13
 pub def opImeInput(): Int = 14
 pub def opImeClear(): Int = 15
+pub def opPushCircleClip(): Int = 16
 
 pub data DrawList {
     MkDrawList {
@@ -688,6 +696,17 @@ pub def pushClip(dl: DrawList, r: Rect): Void = {
     arraySet(arr, base + 3, floatToBits64(r.rw));
     arraySet(arr, base + 4, floatToBits64(r.rh));
     cellSet(dl.dlWordLen, base + 5);
+    bumpCmd(dl)
+}
+
+pub def pushCircleClip(dl: DrawList, cx: Float, cy: Float, radius: Float): Void = {
+    let arr = ensureWords(dl, 4);
+    let base = cellGet(dl.dlWordLen);
+    arraySet(arr, base, packI32Pair(16, 0));
+    arraySet(arr, base + 1, floatToBits64(cx));
+    arraySet(arr, base + 2, floatToBits64(cy));
+    arraySet(arr, base + 3, floatToBits64(maxFloat(0.0, radius)));
+    cellSet(dl.dlWordLen, base + 4);
     bumpCmd(dl)
 }
 

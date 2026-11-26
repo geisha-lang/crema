@@ -24,7 +24,7 @@ use kagura.gfx.{
 use kagura.ui.{
     themeXuanPaper,
     wFixed, hFixed, wGrow, hGrow, fillSpace, pad, gap,
-    Element, row, col, scrollView, paragraph, button,
+    Element, row, wrapRow, col, scrollView, scrollViewSticky, paragraph, button,
     UiHitAction, ActClick, UiFrameCtx, MkUiFrameCtx,
     measureElement, renderUiRoot, hitTestUi
 }
@@ -146,7 +146,16 @@ def testUiLayoutAndFunctor(): Result Void String = {
         cellGet(found)
     };
     assertTrue("scrolled-out child button is clipped from hit testing", !hasClippedBtn)?;
-    printLn("  [PASS] kagura.ui: Flexbox Grow/Fixed layout, ScrollView hitbox clipping & Functor.fmap");
+
+    // Flow-wrap `wrapRow` wraps chips onto multiple rows when exceeding available width
+    let wrappedChips: Element RootMsg = wrapRow([wFixed(180.0), gap(8.0)], 6.0, [
+        button(th, "chip-1", "威远镖局", Some(TopClicked)),
+        button(th, "chip-2", "汴水南渡", Some(TopClicked)),
+        button(th, "chip-3", "开封府学", Some(TopClicked))
+    ]);
+    let (_, wrapH) = measureElement(wrappedChips, 180.0, 400.0);
+    assertTrue("wrapRow wraps 3 wide chips across >= 2 lines", wrapH > 68.0)?;
+    printLn("  [PASS] kagura.ui: Flexbox Grow/Fixed/WrapRow layout, ScrollView hitbox clipping & Functor.fmap");
     Ok(())
 }
 

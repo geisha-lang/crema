@@ -402,6 +402,15 @@ static void cg_add_round_rect(CGContextRef cg, CGRect r, CGFloat rad) {
             case 13: { CGContextRestoreGState(cg); w += 1; break; }
             case 14: w += 6; break;
             case 15: w += 1; break;
+            case 16: { // OP_PUSH_CIRCLE_CLIP
+                CGFloat cx = f64[w + 1], cy = f64[w + 2], r = f64[w + 3];
+                CGContextSaveGState(cg);
+                CGContextBeginPath(cg);
+                CGContextAddEllipseInRect(cg, CGRectMake(cx - r, cy - r, r * 2.0, r * 2.0));
+                CGContextClip(cg);
+                w += 4;
+                break;
+            }
             default: w = g_word_len; break;
         }
     }

@@ -8,15 +8,15 @@ use std.list.{listAppend, listMap}
 use std.map.{StrMap, strMapNew, strMapGet, strMapInsert}
 use std.control.{Functor, fmap}
 use kagura.gfx.{
-    Vec2, vec2, Rect, rect, colorR, maxFloat, clampFloat,
+    Vec2, vec2, Rect, rect, colorR, minFloat, maxFloat, clampFloat,
     DrawList, drawListWithCap, dlClear, dlWordCount, dlStrCount,
     dlRawWords, dlRawStrs, drawClearBg, emitImeClear
 }
 use kagura.ui.{
-    Theme, Element,
+    Theme, Element, scrollPinnedSentinel,
     UiHitAction, ActClick, ActFocusInput, ActSwallow,
-    PlacedHitbox, PlacedScroll, UiFrameCtx, MkUiFrameCtx,
-    renderUiRoot, hitTestUi, findScrollZoneAt
+    PlacedHitbox, PlacedScroll, PlacedDrag, PlacedWheel, UiFrameCtx, MkUiFrameCtx,
+    renderUiRoot, hitTestUi, findScrollZoneAt, findDragZoneAt, findWheelZoneAt
 }
 
 // ============================================================================
@@ -59,6 +59,9 @@ pub data Cmd msg {
     CmdSaveLocal(String, String),
     CmdSendNet(String),
     CmdConnectNet(String, String, String),
+    CmdScrollTo(String, Float),
+    CmdScrollToBottom(String),
+    CmdBlurIme,
 }
 
 pub def mapCmd(f: a -> b, cmd: Cmd a): Cmd b = match cmd {
@@ -69,6 +72,9 @@ pub def mapCmd(f: a -> b, cmd: Cmd a): Cmd b = match cmd {
     CmdSaveLocal(k, v) -> CmdSaveLocal(k, v),
     CmdSendNet(p) -> CmdSendNet(p),
     CmdConnectNet(m, u, t) -> CmdConnectNet(m, u, t),
+    CmdScrollTo(sid, off) -> CmdScrollTo(sid, off),
+    CmdScrollToBottom(sid) -> CmdScrollToBottom(sid),
+    CmdBlurIme -> CmdBlurIme,
 }
 
 instance Functor Cmd {
@@ -154,6 +160,8 @@ pub data Runtime model msg {
         rtScrollOffsets: StrMap Float,
         rtHits: Cell (List (PlacedHitbox msg)),
         rtScrolls: Cell (List PlacedScroll),
+        rtDrags: Cell (List (PlacedDrag msg)),
+        rtWheels: Cell (List (PlacedWheel msg)),
         rtDirty: Cell Bool,
     },
 }
@@ -178,6 +186,23 @@ def runCmdQueue(rt: Runtime model msg, firstCmd: Cmd msg): Void = {
                     CmdSaveLocal(k, v) -> rt.rtHost.hbSaveLocal(k, v),
                     CmdSendNet(p) -> rt.rtHost.hbSendNet(p),
                     CmdConnectNet(mode, u, tok) -> rt.rtHost.hbConnectNet(mode, u, tok),
+                    CmdScrollTo(sid, off) -> {
+                        strMapInsert(rt.rtScrollOffsets, sid, maxFloat(0.0, off));
+                        cellSet(rt.rtDirty, true)
+                    },
+                    CmdScrollToBottom(sid) -> {
+                        strMapInsert(rt.rtScrollOffsets, sid, scrollPinnedSentinel());
+                        cellSet(rt.rtDirty, true)
+                    },
+                    CmdBlurIme -> {
+                        if (strLen(cellGet(rt.rtFocusedInput)) > 0) {
+                            cellSet(rt.rtFocusedInput, "");
+                            cellSet(rt.rtInputHandler, None);
+                            cellSet(rt.rtSubmitMsg, None);
+                            cellSet(rt.rtDirty, true)
+                        } else ();
+                        rt.rtHost.hbBlurIme()
+                    },
                 }
             },
             Nil -> (),
@@ -211,6 +236,8 @@ pub def runtimeCreate(cfg: AppConfig model msg, width: Float, height: Float, hos
         rtScrollOffsets: strMapNew(),
         rtHits: cellNew(Nil),
         rtScrolls: cellNew(Nil),
+        rtDrags: cellNew(Nil),
+        rtWheels: cellNew(Nil),
         rtDirty: cellNew(true),
     };
     runCmdQueue(rt, initCmd);
@@ -249,14 +276,15 @@ pub def rtRenderOffscreen(rt: Runtime model msg): DrawList = {
         None -> emitImeClear(dl),
     };
 
-    // Clamp stored scroll offsets to newly computed `psMaxScroll`
+    // Clamp stored scroll offsets to newly computed `psMaxScroll` (preserving sticky-bottom sentinel)
     let sCur = cellNew(out.urScrolls);
     while (match cellGet(sCur) { Nil -> false, _ -> true }) {
         match cellGet(sCur) {
             Cons(sz, rest) -> {
                 match strMapGet(rt.rtScrollOffsets, sz.psId) {
                     Some(curOff) ->
-                        if (curOff > sz.psMaxScroll) strMapInsert(rt.rtScrollOffsets, sz.psId, sz.psMaxScroll)
+                        if (sz.psStickyDefault && curOff >= scrollPinnedSentinel() - 10.0) ()
+                        else if (curOff > sz.psMaxScroll) strMapInsert(rt.rtScrollOffsets, sz.psId, sz.psMaxScroll)
                         else (),
                     None -> (),
                 };
@@ -268,6 +296,8 @@ pub def rtRenderOffscreen(rt: Runtime model msg): DrawList = {
 
     cellSet(rt.rtHits, out.urHits);
     cellSet(rt.rtScrolls, out.urScrolls);
+    cellSet(rt.rtDrags, out.urDrags);
+    cellSet(rt.rtWheels, out.urWheels);
     cellSet(rt.rtDirty, false);
     dl
 }
@@ -356,19 +386,50 @@ pub def rtPointerClick(rt: Runtime model msg, x: Float, y: Float): Void = {
     }
 }
 
+def applyScrollZoneDelta(rt: Runtime model msg, sz: PlacedScroll, deltaY: Float): Void = {
+    let prev = match strMapGet(rt.rtScrollOffsets, sz.psId) {
+        Some(v) ->
+            if (sz.psStickyDefault && v >= scrollPinnedSentinel() - 10.0) sz.psMaxScroll
+            else minFloat(sz.psMaxScroll, v),
+        None -> if (sz.psStickyDefault) sz.psMaxScroll else 0.0,
+    };
+    let clamped = clampFloat(0.0, sz.psMaxScroll, prev + deltaY);
+    let stored =
+        if (sz.psStickyDefault && (sz.psMaxScroll <= 1.0 || (sz.psMaxScroll - clamped) <= 20.0))
+            scrollPinnedSentinel()
+        else clamped;
+    if (clamped != prev || (sz.psStickyDefault && stored == scrollPinnedSentinel() && prev < sz.psMaxScroll)) {
+        strMapInsert(rt.rtScrollOffsets, sz.psId, stored);
+        cellSet(rt.rtDirty, true)
+    } else ()
+}
+
+pub def rtIsPinnedBottom(rt: Runtime model msg, scrollId: String): Bool =
+    match strMapGet(rt.rtScrollOffsets, scrollId) {
+        None -> true,
+        Some(v) -> v >= scrollPinnedSentinel() - 10.0,
+    }
+
 pub def rtScrollWheel(rt: Runtime model msg, x: Float, y: Float, deltaY: Float): Void =
     match findScrollZoneAt(cellGet(rt.rtScrolls), x, y) {
-        None -> (),
-        Some(sz) -> {
-            let prev = match strMapGet(rt.rtScrollOffsets, sz.psId) {
-                Some(v) -> v,
-                None -> 0.0,
-            };
-            let next = clampFloat(0.0, sz.psMaxScroll, prev + deltaY);
-            if (next != prev) {
-                strMapInsert(rt.rtScrollOffsets, sz.psId, next);
-                cellSet(rt.rtDirty, true)
-            } else ()
+        Some(sz) -> applyScrollZoneDelta(rt, sz, deltaY),
+        None -> match findWheelZoneAt(cellGet(rt.rtWheels), x, y) {
+            Some(wz) -> rtDispatch(rt, wz.pwOnWheel(wz.pwRect, vec2(x, y), deltaY)),
+            None -> (),
+        },
+    }
+
+pub def rtPointerDrag(
+    rt: Runtime model msg,
+    startX: Float, startY: Float,
+    curX: Float, curY: Float,
+    dx: Float, dy: Float
+): Void =
+    match findScrollZoneAt(cellGet(rt.rtScrolls), startX, startY) {
+        Some(sz) -> applyScrollZoneDelta(rt, sz, 0.0 - dy),
+        None -> match findDragZoneAt(cellGet(rt.rtDrags), startX, startY) {
+            Some(dz) -> rtDispatch(rt, dz.pdOnDrag(dz.pdRect, vec2(curX, curY), vec2(dx, dy))),
+            None -> (),
         },
     }
 

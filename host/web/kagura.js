@@ -55,11 +55,18 @@ export async function mountKaguraApp(options = {}) {
 
   let cssW = Math.max(320, canvas.clientWidth || window.innerWidth);
   let cssH = Math.max(220, canvas.clientHeight || window.innerHeight);
+  let layoutH = cssH;
   let dpr = Math.min(2.0, window.devicePixelRatio || 1);
 
   function syncCanvasSize() {
     cssW = Math.max(320, canvas.clientWidth || window.innerWidth);
-    cssH = Math.max(220, canvas.clientHeight || window.innerHeight);
+    cssH = options.minHeight
+      ? Math.max(options.minHeight, canvas.clientHeight || window.innerHeight)
+      : Math.max(220, canvas.clientHeight || window.innerHeight);
+    const vv = window.visualViewport;
+    layoutH = options.minHeight
+      ? cssH
+      : Math.max(220, Math.min(cssH, Math.round(vv ? vv.height : cssH)));
     dpr = Math.min(2.0, window.devicePixelRatio || 1);
     const pw = Math.round(cssW * dpr);
     const ph = Math.round(cssH * dpr);
@@ -68,7 +75,17 @@ export async function mountKaguraApp(options = {}) {
       canvas.height = ph;
     }
   }
+  function syncVisualViewport() {
+    const vv = window.visualViewport;
+    if (!vv || options.minHeight) return;
+    layoutH = Math.max(220, Math.min(cssH, Math.round(vv.height)));
+    if (window.scrollY !== 0) window.scrollTo(0, 0);
+  }
   window.addEventListener("resize", syncCanvasSize);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", syncVisualViewport);
+    window.visualViewport.addEventListener("scroll", syncVisualViewport);
+  }
   syncCanvasSize();
 
   // Cached image pool for OP_IMAGE
@@ -270,7 +287,8 @@ export async function mountKaguraApp(options = {}) {
               ctx.stroke();
             }
             if ((aux & 1) !== 0 && rw > 10 && rh > 10) {
-              ctx.strokeStyle = "rgba(156,114,44,0.28)";
+              const topLum = ((fillTop >>> 24) & 255);
+              ctx.strokeStyle = (fillTop !== 0 && topLum < 80) ? "rgba(196,163,99,0.40)" : "rgba(156,114,44,0.28)";
               ctx.lineWidth = 0.75;
               ctx.beginPath();
               ctx.roundRect(x + 3.5, y + 3.5, rw - 7, rh - 7, Math.max(1, rad - 1));
@@ -486,6 +504,15 @@ export async function mountKaguraApp(options = {}) {
           w += 1;
           break;
         }
+        case 16: { // OP_PUSH_CIRCLE_CLIP (4 words)
+          const cx = f64[w + 1], cy = f64[w + 2], r = Math.max(0, f64[w + 3]);
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          ctx.clip();
+          w += 4;
+          break;
+        }
         default:
           w = wordCount;
           break;
@@ -496,29 +523,133 @@ export async function mountKaguraApp(options = {}) {
     syncImeBox(frameIme);
   }
 
-  // Optional WebSocket network transport
+  // Dual WebSocket + Optional HTTP Long-Poll Bridge (`options.httpBridgePrefix`, e.g. "/api/bridge")
   let ws = null;
-  function connectNet(mode, user, token) {
-    if (ws) { try { ws.close(); } catch (_) {} ws = null; }
-    const targetUrl = options.wsUrl || `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
-    const sock = new WebSocket(targetUrl);
-    ws = sock;
-    sock.addEventListener("open", () => {
+  let bridgeSession = null;
+  let bridgeAborter = null;
+  const bridgePrefix = options.httpBridgePrefix || "";
+
+  async function startHttpBridgeLoop(sessionId) {
+    while (bridgeSession === sessionId) {
+      try {
+        bridgeAborter = new AbortController();
+        const res = await fetch(`${bridgePrefix}/poll`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId }),
+          signal: bridgeAborter.signal,
+        });
+        if (!res.ok) break;
+        const { messages, closed } = await res.json();
+        for (const m of messages || []) {
+          if (wasmExports.kagura_on_net_message) {
+            invokeWasm(() => wasmExports.kagura_on_net_message(writeStr(m)));
+          }
+        }
+        if (closed) {
+          bridgeSession = null;
+          if (wasmExports.kagura_on_net_close) invokeWasm(() => wasmExports.kagura_on_net_close());
+          break;
+        }
+      } catch (e) {
+        if (e.name === "AbortError") break;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
+  }
+
+  async function openHttpBridge(mode, user, token) {
+    try {
+      const res = await fetch(`${bridgePrefix}/open`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const { sessionId } = await res.json();
+      bridgeSession = sessionId;
       if (wasmExports.kagura_on_net_open) {
         invokeWasm(() => wasmExports.kagura_on_net_open(writeStr(mode), writeStr(user), writeStr(token)));
       }
-    });
-    sock.addEventListener("message", (ev) => {
-      if (typeof ev.data === "string" && wasmExports.kagura_on_net_message) {
-        invokeWasm(() => wasmExports.kagura_on_net_message(writeStr(ev.data)));
-      }
-    });
-    sock.addEventListener("close", () => {
-      if (ws === sock && wasmExports.kagura_on_net_close) {
-        ws = null;
-        invokeWasm(() => wasmExports.kagura_on_net_close());
-      }
-    });
+      startHttpBridgeLoop(sessionId);
+    } catch (_) {
+      if (wasmExports.kagura_on_net_close) invokeWasm(() => wasmExports.kagura_on_net_close());
+    }
+  }
+
+  function connectNet(mode, user, token) {
+    if (ws) { try { ws.close(); } catch (_) {} ws = null; }
+    if (bridgeAborter) { try { bridgeAborter.abort(); } catch (_) {} }
+    bridgeSession = null;
+
+    const targetUrl = options.wsUrl || `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
+    let settled = false;
+    const fallbackTimer = bridgePrefix
+      ? setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            if (ws) { try { ws.close(); } catch (_) {} ws = null; }
+            openHttpBridge(mode, user, token);
+          }
+        }, 950)
+      : null;
+
+    try {
+      const sock = new WebSocket(targetUrl);
+      ws = sock;
+      sock.addEventListener("open", () => {
+        if (settled) return;
+        settled = true;
+        if (fallbackTimer) clearTimeout(fallbackTimer);
+        if (wasmExports.kagura_on_net_open) {
+          invokeWasm(() => wasmExports.kagura_on_net_open(writeStr(mode), writeStr(user), writeStr(token)));
+        }
+      });
+      sock.addEventListener("message", (ev) => {
+        if (typeof ev.data === "string" && wasmExports.kagura_on_net_message) {
+          invokeWasm(() => wasmExports.kagura_on_net_message(writeStr(ev.data)));
+        }
+      });
+      sock.addEventListener("error", () => {
+        if (!settled && bridgePrefix) {
+          settled = true;
+          if (fallbackTimer) clearTimeout(fallbackTimer);
+          ws = null;
+          openHttpBridge(mode, user, token);
+        }
+      });
+      sock.addEventListener("close", () => {
+        if (settled && ws === sock && wasmExports.kagura_on_net_close) {
+          ws = null;
+          invokeWasm(() => wasmExports.kagura_on_net_close());
+        }
+      });
+    } catch (_) {
+      if (fallbackTimer) clearTimeout(fallbackTimer);
+      if (bridgePrefix) openHttpBridge(mode, user, token);
+    }
+  }
+
+  function sendNet(payload) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(payload);
+    } else if (bridgeSession && bridgePrefix) {
+      const sid = bridgeSession;
+      fetch(`${bridgePrefix}/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: sid, payload }),
+      })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (data?.messages?.length && wasmExports.kagura_on_net_message) {
+            for (const m of data.messages) {
+              invokeWasm(() => wasmExports.kagura_on_net_message(writeStr(m)));
+            }
+          }
+        })
+        .catch(() => {});
+    }
   }
 
   const wasmBytes = await (await fetch(wasmUrl)).arrayBuffer();
@@ -555,40 +686,76 @@ export async function mountKaguraApp(options = {}) {
       kagura_host_save_local: (kPtr, vPtr) => {
         try { localStorage.setItem(readStr(kPtr), readStr(vPtr)); } catch (_) {}
       },
-      kagura_host_send_net: (payloadPtr) => {
-        if (ws && ws.readyState === WebSocket.OPEN) ws.send(readStr(payloadPtr));
-      },
+      kagura_host_send_net: (payloadPtr) => sendNet(readStr(payloadPtr)),
       kagura_host_connect_net: (mPtr, uPtr, tPtr) => connectNet(readStr(mPtr), readStr(uPtr), readStr(tPtr)),
+      ...(options.extraImports ? options.extraImports({ readStr, writeStr, invokeWasm }) : {}),
     },
   });
 
   wasmExports = instance.exports;
   invokeWasm(() => wasmExports.__geisha_init());
   lastGcLive = wasmExports.gs_wasm_heap_live() >>> 0;
-  invokeWasm(() => wasmExports.kagura_init(cssW, cssH));
+  if (options.beforeInit) {
+    await options.beforeInit({ exports: wasmExports, readStr, writeStr, invokeWasm, cssW, cssH: layoutH });
+  }
+  invokeWasm(() => wasmExports.kagura_init(cssW, layoutH));
 
-  // Event listeners
+  // Event listeners (unified pointer tap + touch/mouse drag + wheel + IME + keyboard)
   const rectOffset = (e) => {
     const r = canvas.getBoundingClientRect();
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   };
 
-  canvas.addEventListener("pointermove", (e) => {
-    const { x, y } = rectOffset(e);
-    if (wasmExports.kagura_pointer_move) invokeWasm(() => wasmExports.kagura_pointer_move(x, y));
-  });
+  let dragging = false, dragMoved = false, startX = 0, startY = 0, lastX = 0, lastY = 0;
 
   canvas.addEventListener("pointerdown", (e) => {
     if (e.button > 0) return;
     const { x, y } = rectOffset(e);
-    if (wasmExports.kagura_pointer_click) invokeWasm(() => wasmExports.kagura_pointer_click(x, y));
-    if (activeImeId && imeInput) {
-      e.preventDefault();
-      imeInput.focus({ preventScroll: true });
-    }
+    dragging = true;
+    dragMoved = false;
+    startX = x;
+    startY = y;
+    lastX = x;
+    lastY = y;
   });
 
+  canvas.addEventListener("pointermove", (e) => {
+    const { x, y } = rectOffset(e);
+    if (dragging) {
+      if (!dragMoved && Math.hypot(x - startX, y - startY) > 8) {
+        dragMoved = true;
+      }
+      if (dragMoved) {
+        const dx = x - lastX;
+        const dy = y - lastY;
+        lastX = x;
+        lastY = y;
+        if (wasmExports.kagura_pointer_drag) {
+          invokeWasm(() => wasmExports.kagura_pointer_drag(startX, startY, x, y, dx, dy));
+        }
+        return;
+      }
+    }
+    if (wasmExports.kagura_pointer_move) invokeWasm(() => wasmExports.kagura_pointer_move(x, y));
+  });
+
+  canvas.addEventListener("pointerup", (e) => {
+    const wasTap = dragging && !dragMoved;
+    dragging = false;
+    dragMoved = false;
+    if (wasTap && e.button <= 0) {
+      const { x, y } = rectOffset(e);
+      if (wasmExports.kagura_pointer_click) invokeWasm(() => wasmExports.kagura_pointer_click(x, y));
+      if (activeImeId && imeInput) {
+        imeInput.focus({ preventScroll: true });
+      }
+    }
+  });
+  window.addEventListener("pointerup", () => { dragging = false; dragMoved = false; });
+  window.addEventListener("pointercancel", () => { dragging = false; dragMoved = false; });
+
   canvas.addEventListener("wheel", (e) => {
+    if (options.allowPageScroll) return;
     e.preventDefault();
     const { x, y } = rectOffset(e);
     if (wasmExports.kagura_scroll_wheel) invokeWasm(() => wasmExports.kagura_scroll_wheel(x, y, e.deltaY));
@@ -607,6 +774,7 @@ export async function mountKaguraApp(options = {}) {
       }
     };
     imeInput.addEventListener("input", syncText);
+    imeInput.addEventListener("compositionupdate", syncText);
     imeInput.addEventListener("compositionend", syncText);
     imeInput.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter" && !ev.isComposing && activeImeId && wasmExports.kagura_text_submit) {
@@ -629,19 +797,24 @@ export async function mountKaguraApp(options = {}) {
     lastTs = ts;
     if (!document.hidden && wasmExports.kagura_step_frame) {
       frameCount++;
-      invokeWasm(() => wasmExports.kagura_step_frame(dt, cssW, cssH));
+      invokeWasm(() => wasmExports.kagura_step_frame(dt, cssW, layoutH));
+      if (options.onAfterFrame) options.onAfterFrame();
     }
     requestAnimationFrame(loop);
   };
   // Render initial frame synchronously before starting rAF
   if (wasmExports.kagura_step_frame) {
     frameCount++;
-    invokeWasm(() => wasmExports.kagura_step_frame(16.6, cssW, cssH));
+    invokeWasm(() => wasmExports.kagura_step_frame(16.6, cssW, layoutH));
+    if (options.onAfterFrame) options.onAfterFrame();
   }
   requestAnimationFrame(loop);
 
   const api = {
     exports: wasmExports,
+    readStr,
+    writeStr,
+    invokeWasm,
     stats: () => ({
       frameCount,
       presentCount,
@@ -650,9 +823,11 @@ export async function mountKaguraApp(options = {}) {
     }),
     click: (x, y) => invokeWasm(() => wasmExports.kagura_pointer_click(x, y)),
     move: (x, y) => invokeWasm(() => wasmExports.kagura_pointer_move(x, y)),
+    drag: (sx, sy, cx, cy, dx, dy) =>
+      wasmExports.kagura_pointer_drag && invokeWasm(() => wasmExports.kagura_pointer_drag(sx, sy, cx, cy, dx, dy)),
     wheel: (x, y, dy) => invokeWasm(() => wasmExports.kagura_scroll_wheel(x, y, dy)),
     key: (k) => invokeWasm(() => wasmExports.kagura_key_down(writeStr(k))),
-    step: (dt = 16.6) => invokeWasm(() => wasmExports.kagura_step_frame(dt, cssW, cssH)),
+    step: (dt = 16.6) => invokeWasm(() => wasmExports.kagura_step_frame(dt, cssW, layoutH)),
   };
   window.__kagura = api;
   if (options.onReady) options.onReady(api);

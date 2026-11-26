@@ -193,6 +193,24 @@ pub def minW(px: Float): StyleMod = (s) -> MkBoxStyle {
     bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
 }
 
+pub def minH(px: Float): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: s.bsWidth, bsHeight: s.bsHeight, bsMinW: s.bsMinW, bsMinH: maxFloat(0.0, px), bsMaxW: s.bsMaxW, bsMaxH: s.bsMaxH,
+    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
+    bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
+    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
+    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
+    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+}
+
+pub def maxH(px: Float): StyleMod = (s) -> MkBoxStyle {
+    bsWidth: s.bsWidth, bsHeight: s.bsHeight, bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: s.bsMaxW, bsMaxH: maxFloat(0.0, px),
+    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
+    bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
+    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
+    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
+    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+}
+
 pub def maxW(px: Float): StyleMod = (s) -> MkBoxStyle {
     bsWidth: s.bsWidth, bsHeight: s.bsHeight, bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: maxFloat(0.0, px), bsMaxH: s.bsMaxH,
     bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
@@ -376,11 +394,18 @@ pub data Element msg {
     ElInteractive(String, BoxStyle, BoxStyle, String, Option msg, Element msg),
     ElTextInput(String, BoxStyle, FontSpec, Color, Color, Color, String, String, String -> msg, Option msg),
     ElCanvas(BoxStyle, (Rect, Vec2, DrawList) -> List (CanvasHit msg)),
+    ElCanvasInteractive(
+        BoxStyle,
+        Option ((Rect, Vec2, Vec2) -> msg),
+        Option ((Rect, Vec2, Float) -> msg),
+        (Rect, Vec2, String, DrawList) -> List (CanvasHit msg)
+    ),
     ElBox(BoxStyle, Element msg),
     ElRow(BoxStyle, List (Element msg)),
+    ElWrapRow(BoxStyle, Float, List (Element msg)),
     ElCol(BoxStyle, List (Element msg)),
     ElZStack(BoxStyle, List (Element msg)),
-    ElScroll(String, BoxStyle, Element msg),
+    ElScroll(String, Bool, BoxStyle, Element msg),
 }
 
 pub def mapElement(f: a -> b, el: Element a): Element b = match el {
@@ -403,11 +428,24 @@ pub def mapElement(f: a -> b, el: Element a): Element b = match el {
             chCursor: h.chCursor,
             chMsg: f(h.chMsg),
         })),
+    ElCanvasInteractive(st, mDrag, mWheel, renderFn) ->
+        ElCanvasInteractive(
+            st,
+            match mDrag { Some(df) -> Some((r, p, d) -> f(df(r, p, d))), None -> None },
+            match mWheel { Some(wf) -> Some((r, p, dy) -> f(wf(r, p, dy))), None -> None },
+            (r, pt, hk, dl) -> listMap(renderFn(r, pt, hk, dl), (h) -> MkCanvasHit {
+                chRect: h.chRect,
+                chKey: h.chKey,
+                chCursor: h.chCursor,
+                chMsg: f(h.chMsg),
+            })
+        ),
     ElBox(st, child) -> ElBox(st, mapElement(f, child)),
     ElRow(st, children) -> ElRow(st, listMap(children, (c) -> mapElement(f, c))),
+    ElWrapRow(st, rg, children) -> ElWrapRow(st, rg, listMap(children, (c) -> mapElement(f, c))),
     ElCol(st, children) -> ElCol(st, listMap(children, (c) -> mapElement(f, c))),
     ElZStack(st, children) -> ElZStack(st, listMap(children, (c) -> mapElement(f, c))),
-    ElScroll(sid, st, child) -> ElScroll(sid, st, mapElement(f, child)),
+    ElScroll(sid, sticky, st, child) -> ElScroll(sid, sticky, st, mapElement(f, child)),
 }
 
 instance Functor Element {
@@ -443,6 +481,9 @@ pub def plaqueCard(theme: Theme, mods: List StyleMod, children: List (Element ms
 pub def row(mods: List StyleMod, children: List (Element msg)): Element msg =
     ElRow(applyStyles(mods), children)
 
+pub def wrapRow(mods: List StyleMod, rowGap: Float, children: List (Element msg)): Element msg =
+    ElWrapRow(applyStyles(mods), maxFloat(0.0, rowGap), children)
+
 pub def col(mods: List StyleMod, children: List (Element msg)): Element msg =
     ElCol(applyStyles(mods), children)
 
@@ -450,7 +491,13 @@ pub def zstack(mods: List StyleMod, children: List (Element msg)): Element msg =
     ElZStack(applyStyles(mods), children)
 
 pub def scrollView(scrollId: String, mods: List StyleMod, child: Element msg): Element msg =
-    ElScroll(scrollId, applyStyles(mods), child)
+    ElScroll(scrollId, false, applyStyles(mods), child)
+
+pub def scrollViewSticky(scrollId: String, mods: List StyleMod, child: Element msg): Element msg =
+    ElScroll(scrollId, true, applyStyles(mods), child)
+
+pub def textAligned(font: FontSpec, align: TextAlign, col: Color, txt: String): Element msg =
+    ElText(font, col, align, txt)
 
 pub def label(font: FontSpec, col: Color, txt: String): Element msg =
     ElText(font, col, AlignLeft, txt)
@@ -549,11 +596,33 @@ pub def textInput(
     )
 }
 
+pub def styledButton(
+    btnKey: String,
+    normalMods: List StyleMod,
+    hoverMods: List StyleMod,
+    font: FontSpec,
+    fgCol: Color,
+    labelTxt: String,
+    mOnClick: Option msg
+): Element msg = {
+    let norm = applyStyles(normalMods);
+    let hov = applyStyles(listAppend(normalMods, hoverMods));
+    ElButton(btnKey, norm, hov, font, fgCol, labelTxt, mOnClick)
+}
+
 pub def canvasStage(
     mods: List StyleMod,
     renderFn: (Rect, Vec2, DrawList) -> List (CanvasHit msg)
 ): Element msg =
     ElCanvas(applyStyles(mods), renderFn)
+
+pub def canvasInteractive(
+    mods: List StyleMod,
+    mOnDrag: Option ((Rect, Vec2, Vec2) -> msg),
+    mOnWheel: Option ((Rect, Vec2, Float) -> msg),
+    renderFn: (Rect, Vec2, String, DrawList) -> List (CanvasHit msg)
+): Element msg =
+    ElCanvasInteractive(applyStyles(mods), mOnDrag, mOnWheel, renderFn)
 
 // ============================================================================
 // 4. Two-Pass Flexbox / Stack / Scroll Layout & Hitbox Emission Engine
@@ -574,11 +643,28 @@ pub data PlacedHitbox msg {
     },
 }
 
+pub def scrollPinnedSentinel(): Float = 9999999.0
+
 pub data PlacedScroll {
     MkPlacedScroll {
         psRect: Rect,
         psId: String,
         psMaxScroll: Float,
+        psStickyDefault: Bool,
+    },
+}
+
+pub data PlacedDrag msg {
+    MkPlacedDrag {
+        pdRect: Rect,
+        pdOnDrag: (Rect, Vec2, Vec2) -> msg,
+    },
+}
+
+pub data PlacedWheel msg {
+    MkPlacedWheel {
+        pwRect: Rect,
+        pwOnWheel: (Rect, Vec2, Float) -> msg,
     },
 }
 
@@ -597,6 +683,8 @@ pub data UiRenderOutput msg {
     MkUiRenderOutput {
         urHits: List (PlacedHitbox msg),
         urScrolls: List PlacedScroll,
+        urDrags: List (PlacedDrag msg),
+        urWheels: List (PlacedWheel msg),
         urActiveIme: Option (String, String, Rect),
     },
 }
@@ -614,11 +702,13 @@ def elementGrowX(el: Element msg): Float = match el {
     ElInteractive(_, st, _, _, _, _) -> growWeightOf(st.bsWidth),
     ElTextInput(_, st, _, _, _, _, _, _, _, _) -> growWeightOf(st.bsWidth),
     ElCanvas(st, _) -> growWeightOf(st.bsWidth),
+    ElCanvasInteractive(st, _, _, _) -> growWeightOf(st.bsWidth),
     ElBox(st, _) -> growWeightOf(st.bsWidth),
     ElRow(st, _) -> growWeightOf(st.bsWidth),
+    ElWrapRow(st, _, _) -> growWeightOf(st.bsWidth),
     ElCol(st, _) -> growWeightOf(st.bsWidth),
     ElZStack(st, _) -> growWeightOf(st.bsWidth),
-    ElScroll(_, st, _) -> growWeightOf(st.bsWidth),
+    ElScroll(_, _, st, _) -> growWeightOf(st.bsWidth),
     _ -> 0.0,
 }
 
@@ -630,11 +720,13 @@ def elementGrowY(el: Element msg): Float = match el {
     ElInteractive(_, st, _, _, _, _) -> growWeightOf(st.bsHeight),
     ElTextInput(_, st, _, _, _, _, _, _, _, _) -> growWeightOf(st.bsHeight),
     ElCanvas(st, _) -> growWeightOf(st.bsHeight),
+    ElCanvasInteractive(st, _, _, _) -> growWeightOf(st.bsHeight),
     ElBox(st, _) -> growWeightOf(st.bsHeight),
     ElRow(st, _) -> growWeightOf(st.bsHeight),
+    ElWrapRow(st, _, _) -> growWeightOf(st.bsHeight),
     ElCol(st, _) -> growWeightOf(st.bsHeight),
     ElZStack(st, _) -> growWeightOf(st.bsHeight),
-    ElScroll(_, st, _) -> growWeightOf(st.bsHeight),
+    ElScroll(_, _, st, _) -> growWeightOf(st.bsHeight),
     _ -> 0.0,
 }
 
@@ -751,6 +843,10 @@ pub def measureElement(el: Element msg, availW: Float, availH: Float): (Float, F
         resolveIntrinsicAxis(st.bsWidth, 240.0, availW, st.bsMinW, st.bsMaxW),
         resolveIntrinsicAxis(st.bsHeight, 160.0, availH, st.bsMinH, st.bsMaxH)
     ),
+    ElCanvasInteractive(st, _, _, _) -> (
+        resolveIntrinsicAxis(st.bsWidth, 240.0, availW, st.bsMinW, st.bsMaxW),
+        resolveIntrinsicAxis(st.bsHeight, 160.0, availH, st.bsMinH, st.bsMaxH)
+    ),
     ElBox(st, child) -> {
         let iw = innerAvailW(st, availW);
         let ih = innerAvailH(st, availH);
@@ -784,6 +880,50 @@ pub def measureElement(el: Element msg, availW: Float, availH: Float): (Float, F
             resolveIntrinsicAxis(st.bsWidth, cellGet(sumW) + totalGaps + st.bsPadL + st.bsPadR, availW, st.bsMinW, st.bsMaxW),
             resolveIntrinsicAxis(st.bsHeight, cellGet(maxH) + st.bsPadT + st.bsPadB, availH, st.bsMinH, st.bsMaxH)
         )
+    },
+    ElWrapRow(st, rowGap, children) -> {
+        let iw = maxFloat(1.0, innerAvailW(st, availW));
+        let ih = innerAvailH(st, availH);
+        let nonEmpty = filterVisible(children);
+        if (listLen(nonEmpty) == 0) {
+            (
+                resolveIntrinsicAxis(st.bsWidth, st.bsPadL + st.bsPadR, availW, st.bsMinW, st.bsMaxW),
+                resolveIntrinsicAxis(st.bsHeight, st.bsPadT + st.bsPadB, availH, st.bsMinH, st.bsMaxH)
+            )
+        } else {
+            let lineW = cellNew(0.0);
+            let lineH = cellNew(0.0);
+            let maxLineW = cellNew(0.0);
+            let totalH = cellNew(0.0);
+            let cur = cellNew(nonEmpty);
+            while (match cellGet(cur) { Nil -> false, _ -> true }) {
+                match cellGet(cur) {
+                    Cons(c, r) -> {
+                        let (cw0, ch) = measureElement(c, iw, ih);
+                        let cw = minFloat(iw, cw0);
+                        let lw = cellGet(lineW);
+                        let lh = cellGet(lineH);
+                        if (lw > 0.0 && lw + st.bsGap + cw > iw) {
+                            if (lw > cellGet(maxLineW)) cellSet(maxLineW, lw) else ();
+                            cellSet(totalH, cellGet(totalH) + lh + rowGap);
+                            cellSet(lineW, cw);
+                            cellSet(lineH, ch)
+                        } else {
+                            cellSet(lineW, if (lw > 0.0) lw + st.bsGap + cw else cw);
+                            if (ch > lh) cellSet(lineH, ch) else ()
+                        };
+                        cellSet(cur, r)
+                    },
+                    Nil -> (),
+                }
+            };
+            if (cellGet(lineW) > cellGet(maxLineW)) cellSet(maxLineW, cellGet(lineW)) else ();
+            let finalH = cellGet(totalH) + cellGet(lineH);
+            (
+                resolveIntrinsicAxis(st.bsWidth, cellGet(maxLineW) + st.bsPadL + st.bsPadR, availW, st.bsMinW, st.bsMaxW),
+                resolveIntrinsicAxis(st.bsHeight, finalH + st.bsPadT + st.bsPadB, availH, st.bsMinH, st.bsMaxH)
+            )
+        }
     },
     ElCol(st, children) -> {
         let iw = innerAvailW(st, availW);
@@ -832,7 +972,7 @@ pub def measureElement(el: Element msg, availW: Float, availH: Float): (Float, F
             resolveIntrinsicAxis(st.bsHeight, cellGet(maxH) + st.bsPadT + st.bsPadB, availH, st.bsMinH, st.bsMaxH)
         )
     },
-    ElScroll(_, st, child) -> {
+    ElScroll(_, _, st, child) -> {
         let iw = innerAvailW(st, availW);
         let (cw, ch) = measureElement(child, maxFloat(0.0, iw - 8.0), 999999.0);
         (
@@ -893,6 +1033,8 @@ def emitElement(
     dl: DrawList,
     hits: Vec (PlacedHitbox msg),
     scrolls: Vec PlacedScroll,
+    drags: Vec (PlacedDrag msg),
+    wheels: Vec (PlacedWheel msg),
     activeIme: Cell (Option (String, String, Rect))
 ): Void = match el {
     ElEmpty -> (),
@@ -966,7 +1108,7 @@ def emitElement(
         );
         if (st.bsClip) pushClip(dl, inner) else ();
         let nextClip = if (st.bsClip) clipHitRect(inner, mClip) else mClip;
-        emitElement(child, inner, nextClip, ctx, dl, hits, scrolls, activeIme);
+        emitElement(child, inner, nextClip, ctx, dl, hits, scrolls, drags, wheels, activeIme);
         if (st.bsClip) popClip(dl) else ();
         match mMsg {
             Some(actMsg) -> pushClippedHit(hits, mClip, bounds, hitKey, curStyle, ActClick(actMsg)),
@@ -1027,6 +1169,37 @@ def emitElement(
             }
         }
     },
+    ElCanvasInteractive(st, mOnDrag, mOnWheel, renderFn) -> {
+        emitBoxBackground(dl, st, bounds);
+        let inner = rect(
+            bounds.rx + st.bsPadL,
+            bounds.ry + st.bsPadT,
+            bounds.rw - st.bsPadL - st.bsPadR,
+            bounds.rh - st.bsPadT - st.bsPadB
+        );
+        pushClip(dl, inner);
+        let stageClip = clipHitRect(inner, mClip);
+        match (stageClip, mOnDrag) {
+            (Some(cr), Some(df)) -> vecPush(drags, MkPlacedDrag { pdRect: cr, pdOnDrag: df }),
+            _ -> (),
+        };
+        match (stageClip, mOnWheel) {
+            (Some(cr), Some(wf)) -> vecPush(wheels, MkPlacedWheel { pwRect: cr, pwOnWheel: wf }),
+            _ -> (),
+        };
+        let customHits = renderFn(inner, ctx.ufPointer, ctx.ufHoveredKey, dl);
+        popClip(dl);
+        let cur = cellNew(customHits);
+        while (match cellGet(cur) { Nil -> false, _ -> true }) {
+            match cellGet(cur) {
+                Cons(ch, rest) -> {
+                    pushClippedHit(hits, stageClip, ch.chRect, ch.chKey, ch.chCursor, ActClick(ch.chMsg));
+                    cellSet(cur, rest)
+                },
+                Nil -> (),
+            }
+        }
+    },
     ElBox(st, child) -> {
         emitBoxBackground(dl, st, bounds);
         if (st.bsFillTop != 0 || st.bsBorderW > 0.0) {
@@ -1048,7 +1221,7 @@ def emitElement(
             inner.ry + alignOffset(st.bsAlignY, inner.rh, fh),
             fw, fh
         );
-        emitElement(child, childRect, nextClip, ctx, dl, hits, scrolls, activeIme);
+        emitElement(child, childRect, nextClip, ctx, dl, hits, scrolls, drags, wheels, activeIme);
         if (st.bsClip) popClip(dl) else ()
     },
     ElRow(st, children) -> {
@@ -1101,7 +1274,7 @@ def emitElement(
                         };
                         let cy = inner.ry + alignOffset(st.bsAlignY, inner.rh, ch);
                         let cx = cellGet(curX);
-                        emitElement(chEl, rect(cx, cy, cw, ch), nextClip, ctx, dl, hits, scrolls, activeIme);
+                        emitElement(chEl, rect(cx, cy, cw, ch), nextClip, ctx, dl, hits, scrolls, drags, wheels, activeIme);
                         cellSet(curX, cx + cw + st.bsGap);
                         cellSet(c2, r)
                     },
@@ -1109,6 +1282,48 @@ def emitElement(
                 }
             }
         } else ();
+        if (st.bsClip) popClip(dl) else ()
+    },
+    ElWrapRow(st, rowGap, children) -> {
+        emitBoxBackground(dl, st, bounds);
+        if (st.bsFillTop != 0 || st.bsBorderW > 0.0) {
+            pushClippedHit(hits, mClip, bounds, "", "default", ActSwallow)
+        } else ();
+        let inner = rect(
+            bounds.rx + st.bsPadL,
+            bounds.ry + st.bsPadT,
+            bounds.rw - st.bsPadL - st.bsPadR,
+            bounds.rh - st.bsPadT - st.bsPadB
+        );
+        if (st.bsClip) pushClip(dl, inner) else ();
+        let nextClip = if (st.bsClip) clipHitRect(inner, mClip) else mClip;
+        let vis = filterVisible(children);
+        let curX = cellNew(inner.rx);
+        let curY = cellNew(inner.ry);
+        let lineH = cellNew(0.0);
+        let cur = cellNew(vis);
+        while (match cellGet(cur) { Nil -> false, _ -> true }) {
+            match cellGet(cur) {
+                Cons(chEl, rest) -> {
+                    let (mw, mh) = measureElement(chEl, inner.rw, inner.rh);
+                    let cw = minFloat(inner.rw, mw);
+                    let x0 = cellGet(curX);
+                    let y0 = cellGet(curY);
+                    let lh = cellGet(lineH);
+                    let (nx, ny, nlh) =
+                        if (x0 > inner.rx && x0 + cw > inner.rx + inner.rw)
+                            (inner.rx, y0 + lh + rowGap, mh)
+                        else
+                            (x0, y0, maxFloat(lh, mh));
+                    emitElement(chEl, rect(nx, ny, cw, mh), nextClip, ctx, dl, hits, scrolls, drags, wheels, activeIme);
+                    cellSet(curX, nx + cw + st.bsGap);
+                    cellSet(curY, ny);
+                    cellSet(lineH, nlh);
+                    cellSet(cur, rest)
+                },
+                Nil -> (),
+            }
+        };
         if (st.bsClip) popClip(dl) else ()
     },
     ElCol(st, children) -> {
@@ -1162,7 +1377,7 @@ def emitElement(
                         };
                         let cx = inner.rx + alignOffset(st.bsAlignX, inner.rw, cw);
                         let cy = cellGet(curY);
-                        emitElement(chEl, rect(cx, cy, cw, ch), nextClip, ctx, dl, hits, scrolls, activeIme);
+                        emitElement(chEl, rect(cx, cy, cw, ch), nextClip, ctx, dl, hits, scrolls, drags, wheels, activeIme);
                         cellSet(curY, cy + ch + st.bsGap);
                         cellSet(c2, r)
                     },
@@ -1191,7 +1406,7 @@ def emitElement(
                     let ch = if (elementGrowY(chEl) > 0.0) inner.rh else minFloat(inner.rh, mh);
                     let cx = inner.rx + alignOffset(st.bsAlignX, inner.rw, cw);
                     let cy = inner.ry + alignOffset(st.bsAlignY, inner.rh, ch);
-                    emitElement(chEl, rect(cx, cy, cw, ch), nextClip, ctx, dl, hits, scrolls, activeIme);
+                    emitElement(chEl, rect(cx, cy, cw, ch), nextClip, ctx, dl, hits, scrolls, drags, wheels, activeIme);
                     cellSet(cur, r)
                 },
                 Nil -> (),
@@ -1199,8 +1414,11 @@ def emitElement(
         };
         if (st.bsClip) popClip(dl) else ()
     },
-    ElScroll(scrollId, st, child) -> {
+    ElScroll(scrollId, stickDefault, st, child) -> {
         emitBoxBackground(dl, st, bounds);
+        if (st.bsFillTop != 0 || st.bsBorderW > 0.0) {
+            pushClippedHit(hits, mClip, bounds, "", "default", ActSwallow)
+        } else ();
         let inner = rect(
             bounds.rx + st.bsPadL,
             bounds.ry + st.bsPadT,
@@ -1212,13 +1430,14 @@ def emitElement(
         let maxScroll = maxFloat(0.0, contentH - inner.rh);
         let rawScroll = match strMapGet(ctx.ufScrolls, scrollId) {
             Some(v) -> v,
-            None -> 0.0,
+            None -> if (stickDefault) scrollPinnedSentinel() else 0.0,
         };
         let clampedScroll = clampFloat(0.0, maxScroll, rawScroll);
         vecPush(scrolls, MkPlacedScroll {
             psRect: bounds,
             psId: scrollId,
             psMaxScroll: maxScroll,
+            psStickyDefault: stickDefault,
         });
         pushClip(dl, inner);
         let scrollClip = clipHitRect(inner, mClip);
@@ -1226,7 +1445,7 @@ def emitElement(
             child,
             rect(inner.rx, inner.ry - clampedScroll, contentW, maxFloat(inner.rh, contentH)),
             scrollClip,
-            ctx, dl, hits, scrolls, activeIme
+            ctx, dl, hits, scrolls, drags, wheels, activeIme
         );
         if (maxScroll > 1.0 && inner.rh > 16.0) {
             let trackX = inner.rx + inner.rw - 4.0;
@@ -1242,11 +1461,15 @@ def emitElement(
 pub def renderUiRoot(rootEl: Element msg, ctx: UiFrameCtx, dl: DrawList): UiRenderOutput msg = {
     let hits: Vec (PlacedHitbox msg) = vecNew();
     let scrolls: Vec PlacedScroll = vecNew();
+    let drags: Vec (PlacedDrag msg) = vecNew();
+    let wheels: Vec (PlacedWheel msg) = vecNew();
     let activeIme: Cell (Option (String, String, Rect)) = cellNew(None);
-    emitElement(rootEl, ctx.ufViewport, Some(ctx.ufViewport), ctx, dl, hits, scrolls, activeIme);
+    emitElement(rootEl, ctx.ufViewport, Some(ctx.ufViewport), ctx, dl, hits, scrolls, drags, wheels, activeIme);
     MkUiRenderOutput {
         urHits: vecToList(hits),
         urScrolls: vecToList(scrolls),
+        urDrags: vecToList(drags),
+        urWheels: vecToList(wheels),
         urActiveIme: cellGet(activeIme),
     }
 }
@@ -1273,6 +1496,36 @@ pub def findScrollZoneAt(scrolls: List PlacedScroll, x: Float, y: Float): Option
         match cellGet(cur) {
             Cons(sz, rest) -> {
                 if (rectContains(sz.psRect, x, y)) cellSet(found, Some(sz))
+                else cellSet(cur, rest)
+            },
+            Nil -> (),
+        }
+    };
+    cellGet(found)
+}
+
+pub def findDragZoneAt(drags: List (PlacedDrag msg), x: Float, y: Float): Option (PlacedDrag msg) = {
+    let cur = cellNew(listRev(drags));
+    let found: Cell (Option (PlacedDrag msg)) = cellNew(None);
+    while (match cellGet(cur) { Nil -> false, _ -> match cellGet(found) { None -> true, Some(_) -> false } }) {
+        match cellGet(cur) {
+            Cons(dz, rest) -> {
+                if (rectContains(dz.pdRect, x, y)) cellSet(found, Some(dz))
+                else cellSet(cur, rest)
+            },
+            Nil -> (),
+        }
+    };
+    cellGet(found)
+}
+
+pub def findWheelZoneAt(wheels: List (PlacedWheel msg), x: Float, y: Float): Option (PlacedWheel msg) = {
+    let cur = cellNew(listRev(wheels));
+    let found: Cell (Option (PlacedWheel msg)) = cellNew(None);
+    while (match cellGet(cur) { Nil -> false, _ -> match cellGet(found) { None -> true, Some(_) -> false } }) {
+        match cellGet(cur) {
+            Cons(wz, rest) -> {
+                if (rectContains(wz.pwRect, x, y)) cellSet(found, Some(wz))
                 else cellSet(cur, rest)
             },
             Nil -> (),
