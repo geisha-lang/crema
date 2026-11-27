@@ -8,7 +8,7 @@ use std.list.{listAppend, listMap}
 use std.map.{StrMap, strMapNew, strMapGet, strMapInsert}
 use std.control.{Functor, fmap}
 use crema.gfx.{
-    Vec2, vec2, Rect, rect, colorR, minFloat, maxFloat, clampFloat,
+    Vec2, vec2, Rect, rect, minFloat, maxFloat, clampFloat,
     DrawList, drawListWithCap, dlClear, dlWordCount, dlStrCount,
     dlRawWords, dlRawStrs, drawClearBg, emitImeClear
 }
@@ -29,10 +29,6 @@ pub data HostBridge {
         hbSetCursor: String -> Void,
         hbFocusIme: (String, String, Float, Float, Float, Float) -> Void,
         hbBlurIme: () -> Void,
-        hbPlaySfx: String -> Void,
-        hbSaveLocal: (String, String) -> Void,
-        hbSendNet: String -> Void,
-        hbConnectNet: (String, String, String) -> Void,
     },
 }
 
@@ -41,10 +37,6 @@ pub def headlessHost(): HostBridge = MkHostBridge {
     hbSetCursor: (_c) -> (),
     hbFocusIme: (_id, _v, _x, _y, _w, _h) -> (),
     hbBlurIme: () -> (),
-    hbPlaySfx: (_s) -> (),
-    hbSaveLocal: (_k, _v) -> (),
-    hbSendNet: (_p) -> (),
-    hbConnectNet: (_m, _u, _t) -> (),
 }
 
 // ============================================================================
@@ -55,10 +47,7 @@ pub data Cmd msg {
     CmdNone,
     CmdBatch(List (Cmd msg)),
     CmdEmit(msg),
-    CmdPlaySfx(String),
-    CmdSaveLocal(String, String),
-    CmdSendNet(String),
-    CmdConnectNet(String, String, String),
+    CmdPerform(() -> Void),
     CmdScrollTo(String, Float),
     CmdScrollToBottom(String),
     CmdBlurIme,
@@ -68,10 +57,7 @@ pub def mapCmd(f: a -> b, cmd: Cmd a): Cmd b = match cmd {
     CmdNone -> CmdNone,
     CmdBatch(cs) -> CmdBatch(listMap(cs, (c) -> mapCmd(f, c))),
     CmdEmit(m) -> CmdEmit(f(m)),
-    CmdPlaySfx(s) -> CmdPlaySfx(s),
-    CmdSaveLocal(k, v) -> CmdSaveLocal(k, v),
-    CmdSendNet(p) -> CmdSendNet(p),
-    CmdConnectNet(m, u, t) -> CmdConnectNet(m, u, t),
+    CmdPerform(eff) -> CmdPerform(eff),
     CmdScrollTo(sid, off) -> CmdScrollTo(sid, off),
     CmdScrollToBottom(sid) -> CmdScrollToBottom(sid),
     CmdBlurIme -> CmdBlurIme,
@@ -83,6 +69,7 @@ instance Functor Cmd {
 
 pub def cmdNone(): Cmd msg = CmdNone
 pub def cmdBatch(cs: List (Cmd msg)): Cmd msg = CmdBatch(cs)
+pub def cmdPerform(effect: () -> Void): Cmd msg = CmdPerform(effect)
 
 // ============================================================================
 // 3. Declarative `AppConfig model msg` & Managed `Runtime model msg`
@@ -92,15 +79,11 @@ pub data AppConfig model msg {
     MkAppConfig {
         appTheme: Theme,
         appDynamicTheme: Option (model -> Theme),
-        appPaperGrain: Bool,
         appInit: Rect -> (model, Cmd msg),
         appUpdate: (msg, model) -> (model, Cmd msg),
         appView: (Rect, model) -> Element msg,
         appTick: Option ((Float, Rect, model) -> (model, Cmd msg)),
         appOnKey: Option (String -> Option msg),
-        appOnNetOpen: Option (String -> Option msg),
-        appOnNetMessage: Option (String -> Option msg),
-        appOnNetClose: Option msg,
     },
 }
 
@@ -112,15 +95,11 @@ pub def basicUiApp(
 ): AppConfig model msg = MkAppConfig {
     appTheme: theme,
     appDynamicTheme: None,
-    appPaperGrain: true,
     appInit: initFn,
     appUpdate: updateFn,
     appView: viewFn,
     appTick: None,
     appOnKey: None,
-    appOnNetOpen: None,
-    appOnNetMessage: None,
-    appOnNetClose: None,
 }
 
 pub def realtimeGameApp(
@@ -132,15 +111,11 @@ pub def realtimeGameApp(
 ): AppConfig model msg = MkAppConfig {
     appTheme: theme,
     appDynamicTheme: None,
-    appPaperGrain: true,
     appInit: initFn,
     appUpdate: updateFn,
     appTick: Some(tickFn),
     appView: viewFn,
     appOnKey: None,
-    appOnNetOpen: None,
-    appOnNetMessage: None,
-    appOnNetClose: None,
 }
 
 pub data Runtime model msg {
@@ -182,10 +157,7 @@ def runCmdQueue(rt: Runtime model msg, firstCmd: Cmd msg): Void = {
                         cellSet(rt.rtDirty, true);
                         cellSet(queue, listAppend(cellGet(queue), [nextCmd]))
                     },
-                    CmdPlaySfx(sfx) -> rt.rtHost.hbPlaySfx(sfx),
-                    CmdSaveLocal(k, v) -> rt.rtHost.hbSaveLocal(k, v),
-                    CmdSendNet(p) -> rt.rtHost.hbSendNet(p),
-                    CmdConnectNet(mode, u, tok) -> rt.rtHost.hbConnectNet(mode, u, tok),
+                    CmdPerform(eff) -> eff(),
                     CmdScrollTo(sid, off) -> {
                         strMapInsert(rt.rtScrollOffsets, sid, maxFloat(0.0, off));
                         cellSet(rt.rtDirty, true)
@@ -258,10 +230,10 @@ pub def rtRenderOffscreen(rt: Runtime model msg): DrawList = {
         Some(tf) -> tf(curModel),
         None -> rt.rtCfg.appTheme,
     };
-    let showGrain = rt.rtCfg.appPaperGrain && (colorR(th.thBgTop) > 80);
-    drawClearBg(dl, th.thBgTop, th.thBgMid, th.thBgBot, true, showGrain);
+    drawClearBg(dl, th.thBgTop, th.thBgMid, th.thBgBot);
 
     let fctx = MkUiFrameCtx {
+        ufTheme: th,
         ufViewport: vp,
         ufPointer: cellGet(rt.rtPointer),
         ufPointerDown: cellGet(rt.rtPointerDown),
@@ -463,29 +435,5 @@ pub def rtKeyDown(rt: Runtime model msg, key: String): Void =
             Some(m) -> rtDispatch(rt, m),
             None -> (),
         },
-        None -> (),
-    }
-
-pub def rtNetOpen(rt: Runtime model msg, mode: String): Void =
-    match rt.rtCfg.appOnNetOpen {
-        Some(fn) -> match fn(mode) {
-            Some(m) -> rtDispatch(rt, m),
-            None -> (),
-        },
-        None -> (),
-    }
-
-pub def rtNetMessage(rt: Runtime model msg, payload: String): Void =
-    match rt.rtCfg.appOnNetMessage {
-        Some(fn) -> match fn(payload) {
-            Some(m) -> rtDispatch(rt, m),
-            None -> (),
-        },
-        None -> (),
-    }
-
-pub def rtNetClose(rt: Runtime model msg): Void =
-    match rt.rtCfg.appOnNetClose {
-        Some(m) -> rtDispatch(rt, m),
         None -> (),
     }

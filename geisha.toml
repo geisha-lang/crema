@@ -1,5 +1,5 @@
 name = "crema"
-version = "0.1.1"
+version = "0.2.0"
 src_dir = "src"
 tests = ["tests/spec.gsa"]
 
@@ -15,9 +15,6 @@ exports = [
   "crema_text_submit",
   "crema_blur_input",
   "crema_key_down",
-  "crema_on_net_open",
-  "crema_on_net_message",
-  "crema_on_net_close",
 ]
 web_assets = ["host/web/crema.js"]
 
@@ -38,7 +35,4 @@ exports = [
   "crema_text_submit",
   "crema_blur_input",
   "crema_key_down",
-  "crema_on_net_open",
-  "crema_on_net_message",
-  "crema_on_net_close",
 ]

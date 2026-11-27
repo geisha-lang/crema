@@ -8,24 +8,24 @@ BUILD_DIR := $(ROOT_DIR)/build
 
 all: wasm native
 
-wasm: $(BUILD_DIR)/dojo.wasm
+wasm: $(BUILD_DIR)/studio.wasm
 
-$(BUILD_DIR)/dojo.wasm: src/*.gsa examples/dojo/app.gsa host/web/crema.js
+$(BUILD_DIR)/studio.wasm: src/*.gsa examples/studio/app.gsa host/web/crema.js
 	@mkdir -p "$(BUILD_DIR)"
-	cd "$(ROOT_DIR)/examples/dojo" && "$(GEISHA)" build --target wasm32 -o "$(BUILD_DIR)/dojo.wasm"
+	cd "$(ROOT_DIR)/examples/studio" && "$(GEISHA)" build --target wasm32 -o "$(BUILD_DIR)/studio.wasm"
 
-native: $(BUILD_DIR)/crema-dojo
+native: $(BUILD_DIR)/crema-studio
 
-$(BUILD_DIR)/crema-dojo: src/*.gsa examples/dojo/app.gsa host/native/crema_macos.m
+$(BUILD_DIR)/crema-studio: src/*.gsa examples/studio/app.gsa host/native/crema_macos.m
 	@mkdir -p "$(BUILD_DIR)"
-	cd "$(ROOT_DIR)/examples/dojo" && MACOSX_DEPLOYMENT_TARGET=14.0 "$(GEISHA)" build -o "$(BUILD_DIR)/crema-dojo"
+	cd "$(ROOT_DIR)/examples/studio" && MACOSX_DEPLOYMENT_TARGET=14.0 "$(GEISHA)" build -o "$(BUILD_DIR)/crema-studio"
 
 test: wasm native
 	"$(GEISHA)" test
-	"$(BUILD_DIR)/crema-dojo" --headless-smoke
+	"$(BUILD_DIR)/crema-studio" --headless-smoke
 
 serve: wasm
 	python3 -m http.server 8090 --directory "$(ROOT_DIR)"
 
 clean:
-	rm -rf "$(BUILD_DIR)" "$(ROOT_DIR)/examples/dojo/build"
+	rm -rf "$(BUILD_DIR)" "$(ROOT_DIR)/examples/studio/build"

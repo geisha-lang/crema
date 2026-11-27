@@ -354,8 +354,8 @@ pub def wrapTextLines(font: FontSpec, maxW: Float, s: String): List String = {
 // ============================================================================
 //
 // Binary Opcode Table (`[lo32 = opcode, hi32 = aux]` at word `+0`):
-//   1  OP_CLEAR_BG        (3 words): [1, flags], [topCol, midCol], [botCol, 0]
-//   2  OP_RECT            (11 words): [2, flags], x, y, w, h, r, [fillTop, fillBot], [borderCol, shadowCol], lw, shY, shBlur
+//   1  OP_CLEAR_BG        (3 words): [1, 0], [topCol, midCol], [botCol, 0]
+//   2  OP_RECT            (11 words): [2, 0], x, y, w, h, r, [fillTop, fillBot], [borderCol, shadowCol], lw, shY, shBlur
 //   3  OP_PROGRESS_BAR    (10 words): [3, 0], x, y, w, h, r, ratio, trail, [fillStart, fillEnd], [trailCol, trackCol]
 //   4  OP_ELLIPSE         (7 words): [4, 0], cx, cy, rx, ry, [fillCol, strokeCol], lw
 //   5  OP_LINE            (7 words): [5, flags], x1, y1, x2, y2, lw, [col, 0]
@@ -367,8 +367,9 @@ pub def wrapTextLines(font: FontSpec, maxW: Float, s: String): List String = {
 //   11 OP_POP_CLIP        (1 word):  [11, 0]
 //   12 OP_PUSH_TRANSFORM  (6 words): [12, 0], tx, ty, sx, sy, rotDeg
 //   13 OP_POP_TRANSFORM   (1 word):  [13, 0]
-//   14 OP_IME_INPUT       (6 words): [14, idStrIdx], [valStrIdx, 0], x, y, w, h
+//   14 OP_IME_INPUT       (10 words): [14, idStrIdx], [valStrIdx, phStrIdx], x, y, w, h, padX, fontSize, [styleBits, textCol], [phCol, caretCol]
 //   15 OP_IME_CLEAR       (1 word):  [15, 0]
+//   16 OP_PUSH_CIRCLE_CLIP (4 words): [16, 0], cx, cy, radius
 
 pub def opClearBg(): Int = 1
 pub def opRect(): Int = 2
@@ -495,11 +496,10 @@ def bumpCmd(dl: DrawList): Void =
 // High-Level 2D Drawing Primitives
 // ============================================================================
 
-pub def drawClearBg(dl: DrawList, topCol: Color, midCol: Color, botCol: Color, vignette: Bool, paperGrain: Bool): Void = {
-    let flags = (if (vignette) 1 else 0) | (if (paperGrain) 2 else 0);
+pub def drawClearBg(dl: DrawList, topCol: Color, midCol: Color, botCol: Color): Void = {
     let arr = ensureWords(dl, 3);
     let base = cellGet(dl.dlWordLen);
-    arraySet(arr, base, packI32Pair(1, flags));
+    arraySet(arr, base, packI32Pair(1, 0));
     arraySet(arr, base + 1, packI32Pair(topCol, midCol));
     arraySet(arr, base + 2, packI32Pair(botCol, 0));
     cellSet(dl.dlWordLen, base + 3);
@@ -516,12 +516,11 @@ pub def drawCard(
     borderW: Float,
     shadowCol: Color,
     shadowY: Float,
-    shadowBlur: Float,
-    doubleInsetBorder: Bool
+    shadowBlur: Float
 ): Void = {
     let arr = ensureWords(dl, 11);
     let base = cellGet(dl.dlWordLen);
-    arraySet(arr, base, packI32Pair(2, if (doubleInsetBorder) 1 else 0));
+    arraySet(arr, base, packI32Pair(2, 0));
     arraySet(arr, base + 1, floatToBits64(r.rx));
     arraySet(arr, base + 2, floatToBits64(r.ry));
     arraySet(arr, base + 3, floatToBits64(r.rw));
@@ -537,10 +536,10 @@ pub def drawCard(
 }
 
 pub def drawRect(dl: DrawList, r: Rect, radius: Float, fillCol: Color, borderCol: Color, borderW: Float): Void =
-    drawCard(dl, r, radius, fillCol, fillCol, borderCol, borderW, 0, 0.0, 0.0, false)
+    drawCard(dl, r, radius, fillCol, fillCol, borderCol, borderW, 0, 0.0, 0.0)
 
 pub def drawFillRect(dl: DrawList, r: Rect, radius: Float, fillCol: Color): Void =
-    drawCard(dl, r, radius, fillCol, fillCol, 0, 0.0, 0, 0.0, 0.0, false)
+    drawCard(dl, r, radius, fillCol, fillCol, 0, 0.0, 0, 0.0, 0.0)
 
 pub def drawProgressBar(
     dl: DrawList,

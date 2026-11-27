@@ -22,7 +22,7 @@ use crema.gfx.{
     drawClearBg, drawRect, drawPolygon, drawText, AlignCenter, absFloat
 }
 use crema.ui.{
-    themeXuanPaper,
+    themeLight, themeDark,
     wFixed, hFixed, wGrow, hGrow, fillSpace, pad, gap,
     Element, row, wrapRow, col, scrollView, scrollViewSticky, paragraph, button,
     UiHitAction, ActClick, UiFrameCtx, MkUiFrameCtx,
@@ -36,7 +36,7 @@ use crema.stage.{
     MkBurstConfig, spawnBurst2D, stepParticles2D
 }
 use crema.app.{
-    Cmd, CmdNone, CmdEmit, cmdBatch, headlessHost,
+    Cmd, CmdNone, CmdEmit, cmdBatch, cmdPerform, headlessHost,
     basicUiApp, runtimeCreate, rtModel, rtStepFrame, rtPointerClick
 }
 
@@ -44,30 +44,30 @@ def assertTrue(label: String, ok: Bool): Result Void String =
     if (ok) Ok(()) else Err(label)
 
 def testGfxLayer(): Result Void String = {
-    let c = hexColor("#275247");
-    assertTrue("hexColor R", colorR(c) == 39)?;
-    assertTrue("hexColor G", colorG(c) == 82)?;
-    assertTrue("hexColor B", colorB(c) == 71)?;
+    let c = hexColor("#2563eb");
+    assertTrue("hexColor R", colorR(c) == 37)?;
+    assertTrue("hexColor G", colorG(c) == 99)?;
+    assertTrue("hexColor B", colorB(c) == 235)?;
     assertTrue("hexColor A", colorA(c) == 255)?;
 
     let mid = lerpColor(rgba(0, 100, 200, 255), rgba(100, 200, 0, 55), 0.5);
     assertTrue("lerpColor channels", colorR(mid) == 50 && colorG(mid) == 150 && colorB(mid) == 100 && colorA(mid) == 155)?;
 
     let fn = fontSans(14.0, 500);
-    assertTrue("CJK wider than ASCII", measureTextWidth(fn, "江湖") > measureTextWidth(fn, "ab"))?;
-    let wrapped = wrapTextLines(fn, 75.0, "春水碧于天画船听雨眠垆边人似月皓腕凝霜雪");
+    assertTrue("CJK wider than ASCII", measureTextWidth(fn, "布局") > measureTextWidth(fn, "ab"))?;
+    let wrapped = wrapTextLines(fn, 75.0, "声明式布局引擎自动计算中英文混排折行与裁剪边界");
     assertTrue("CJK paragraph wraps into >= 4 lines", listLen(wrapped) >= 4)?;
 
     let dl = drawListNew();
-    drawClearBg(dl, c, c, c, true, true);
+    drawClearBg(dl, c, c, c);
     drawRect(dl, rect(12.5, 24.0, 180.0, 42.0), 4.0, c, 0, 0.0);
     drawPolygon(dl, [vec2(0.0, 0.0), vec2(10.0, 0.0), vec2(5.0, 8.0)], c, 0, 0.0);
-    drawText(dl, 50.0, 30.0, fn, AlignCenter, c, "神楽");
+    drawText(dl, 50.0, 30.0, fn, AlignCenter, c, "Crema");
 
     assertTrue("DrawList command count == 4", dlCmdCount(dl) == 4)?;
-    assertTrue("DrawList string count == 1", dlStrCount(dl) == 1 && dlStrAt(dl, 0) == "神楽")?;
+    assertTrue("DrawList string count == 1", dlStrCount(dl) == 1 && dlStrAt(dl, 0) == "Crema")?;
     let h0 = dlWordAt(dl, 0);
-    assertTrue("op 0 is OP_CLEAR_BG with flags=3", unpackLo32(h0) == opClearBg() && unpackHi32(h0) == 3)?;
+    assertTrue("op 0 is OP_CLEAR_BG with aux=0", unpackLo32(h0) == opClearBg() && unpackHi32(h0) == 0)?;
     let h1 = dlWordAt(dl, 3);
     assertTrue("op 1 is OP_RECT at x=12.5, w=180", unpackLo32(h1) == opRect() && dlFloatAt(dl, 4) == 12.5 && dlFloatAt(dl, 6) == 180.0)?;
     let h2 = dlWordAt(dl, 14);
@@ -86,20 +86,23 @@ data SubMsg { SubClicked(Int) }
 data RootMsg { WrappedSub(SubMsg), TopClicked }
 
 def testUiLayoutAndFunctor(): Result Void String = {
-    let th = themeXuanPaper();
+    let th = themeLight();
+    let thDark = themeDark();
+    assertTrue("light vs dark themes differ", th.thBgTop != thDark.thBgTop && th.thInk != thDark.thInk)?;
+
     // 800px wide row, pad 10 (innerW = 780), gap 20:
-    // Fixed(160) + Grow(1) + Grow(2) -> remW = 780 - 160 - 40 = 580 -> Grow(1)=193.33, Grow(2)=386.67
+    // Fixed + Grow(1) + Grow(2)
     let subView: Element SubMsg = row([wGrow(1.0), hFixed(40.0)], [
-        button(th, "sub-btn", "子按钮", Some(SubClicked(7)))
+        button(th, "sub-btn", "Child", Some(SubClicked(7)))
     ]);
     let tree: Element RootMsg = row([wFixed(800.0), hFixed(120.0), pad(10.0), gap(20.0)], [
-        button(th, "left-fixed", "左固定", Some(TopClicked)),
+        button(th, "left-fixed", "Fixed", Some(TopClicked)),
         fmap(WrappedSub, subView),
         scrollView("test-scroll", [wGrow(2.0), hFixed(80.0)],
             col([wGrow(1.0), gap(10.0)], [
-                button(th, "vis-btn", "可见项", Some(TopClicked)),
-                paragraph(fontSans(14.0, 400), 20.0, th.thInk, "占高段落一\n占高段落二\n占高段落三\n占高段落四\n占高段落五"),
-                button(th, "clipped-btn", "裁剪区外按钮", Some(TopClicked))
+                button(th, "vis-btn", "Visible", Some(TopClicked)),
+                paragraph(fontSans(14.0, 400), 20.0, th.thInk, "Line 1\nLine 2\nLine 3\nLine 4\nLine 5"),
+                button(th, "clipped-btn", "Clipped Button", Some(TopClicked))
             ])
         )
     ]);
@@ -109,6 +112,7 @@ def testUiLayoutAndFunctor(): Result Void String = {
 
     let dl = drawListNew();
     let fctx = MkUiFrameCtx {
+        ufTheme: th,
         ufViewport: rect(0.0, 0.0, 800.0, 120.0),
         ufPointer: vec2(0.0, 0.0),
         ufPointerDown: false,
@@ -149,9 +153,9 @@ def testUiLayoutAndFunctor(): Result Void String = {
 
     // Flow-wrap `wrapRow` wraps chips onto multiple rows when exceeding available width
     let wrappedChips: Element RootMsg = wrapRow([wFixed(180.0), gap(8.0)], 6.0, [
-        button(th, "chip-1", "威远镖局", Some(TopClicked)),
-        button(th, "chip-2", "汴水南渡", Some(TopClicked)),
-        button(th, "chip-3", "开封府学", Some(TopClicked))
+        button(th, "chip-1", "Flexbox", Some(TopClicked)),
+        button(th, "chip-2", "Viewport", Some(TopClicked)),
+        button(th, "chip-3", "ScrollClip", Some(TopClicked))
     ]);
     let (_, wrapH) = measureElement(wrappedChips, 180.0, 400.0);
     assertTrue("wrapRow wraps 3 wide chips across >= 2 lines", wrapH > 68.0)?;
@@ -192,7 +196,7 @@ def testStageLayer(): Result Void String = {
     let burst = spawnBurst2D(MkBurstConfig {
         bcOrigin: vec2(0.0, 0.0), bcCount: 16, bcBaseAngleRad: 0.0, bcSpreadRad: 1.0,
         bcMinSpeed: 50.0, bcMaxSpeed: 100.0, bcMinRadius: 2.0, bcMaxRadius: 4.0,
-        bcLifeSec: 0.4, bcDrag: 1.0, bcGravity: 100.0, bcColor: hexColor("#9e2a22"), bcSeed: 7,
+        bcLifeSec: 0.4, bcDrag: 1.0, bcGravity: 100.0, bcColor: hexColor("#2563eb"), bcSeed: 7,
     });
     assertTrue("spawnBurst2D count == 16", listLen(burst) == 16)?;
     let decayed = stepParticles2D(stepParticles2D(stepParticles2D(stepParticles2D(stepParticles2D(stepParticles2D(burst, 0.1), 0.1), 0.1), 0.1), 0.1), 0.1);
@@ -207,13 +211,18 @@ data CounterAppMsg {
 }
 
 def testDirtyDrivenAppRuntime(): Result Void String = {
-    let th = themeXuanPaper();
+    let th = themeLight();
+    let effectHits = cellNew(0);
     let cfg = basicUiApp(
         th,
         (_vp) -> (10, CmdNone),
         (m, count) -> match m {
             Bump(d) -> (count + d, CmdNone),
-            DoubleBump -> (count, cmdBatch([CmdEmit(Bump(3)), CmdEmit(Bump(4))])),
+            DoubleBump -> (count, cmdBatch([
+                CmdEmit(Bump(3)),
+                CmdEmit(Bump(4)),
+                cmdPerform(() -> cellSet(effectHits, cellGet(effectHits) + 1)),
+            ])),
         },
         (_vp, count) -> col([fillSpace(), pad(20.0)], [
             button(th, "btn-double", "Count=" + intToStr(count), Some(DoubleBump))
@@ -228,16 +237,17 @@ def testDirtyDrivenAppRuntime(): Result Void String = {
     let rendered2 = rtStepFrame(rt, 16.6, 640.0, 480.0);
     assertTrue("Frame 2 skips work when idle (0% idle redraw)", !rendered2)?;
 
-    // Click button at (45, 35) -> triggers DoubleBump -> CmdBatch([Bump(3), Bump(4)]) -> model becomes 17!
+    // Click button at (45, 35) -> triggers DoubleBump -> CmdBatch([Bump(3), Bump(4), CmdPerform]) -> model == 17!
     rtPointerClick(rt, 45.0, 35.0);
     assertTrue("Click dispatched CmdBatch -> model == 17", rtModel(rt) == 17)?;
+    assertTrue("CmdPerform ran custom side effect once", cellGet(effectHits) == 1)?;
 
     let rendered3 = rtStepFrame(rt, 16.6, 640.0, 480.0);
     assertTrue("Frame 3 redraws after state mutation", rendered3)?;
     let rendered4 = rtStepFrame(rt, 16.6, 640.0, 480.0);
     assertTrue("Frame 4 returns to idle zero-redraw state", !rendered4)?;
 
-    printLn("  [PASS] crema.app: dirty-driven zero-idle TEA loop, hit-dispatch & CmdBatch");
+    printLn("  [PASS] crema.app: dirty-driven zero-idle TEA loop, hit-dispatch, CmdBatch & CmdPerform");
     Ok(())
 }
 

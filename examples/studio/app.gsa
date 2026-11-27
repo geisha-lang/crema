@@ -1,0 +1,630 @@
+// Crema Interactive Studio Showcase (`examples/studio/app.gsa`).
+//
+// Compiles unchanged to BOTH:
+//   1. `wasm32` WebAssembly (`build/studio.wasm` + `host/web/crema.js`)
+//   2. `arm64-apple-macosx14.0` Native Cocoa/Quartz2D App (`build/crema-studio`)
+
+use std.option.{Option, Some, None}
+use std.list.{listLen, listAppend, listMap, listRev}
+use std.str.intToStr
+use std.control.fmap
+use crema.gfx.{
+    Vec2, vec2, vAdd, vSub, vScale, vNorm, Rect, rect,
+    Color, rgba, hexColor, withAlpha,
+    fontSans, fontSerif, fontMono,
+    sin, cos, atan2, radToDeg, clampFloat, clamp01, roundInt,
+    DrawList, drawCard, drawCircle, drawEllipse, drawLine, drawPolygon, drawRibbon, drawText, AlignCenter, AlignRight
+}
+use crema.ui.{
+    Theme, themeLight, themeDark,
+    AlignMid, AlignStretch,
+    wFixed, hFixed, wGrow, hGrow, fillSpace, pad, padXY, gap, alignY, bg, border, rounded, clipped,
+    CanvasHit, canvasHit, Element,
+    spacer, growSpacer, card, row, col, scrollView,
+    label, heading, mutedText, paragraph, badge, progressBar,
+    button, outlineButton, textInput, canvasInteractive
+}
+use crema.stage.{
+    Camera2D, cameraNew, cameraPan, cameraStep, cameraZoomBy, cameraAddTrauma,
+    worldToScreen, screenToWorld, withCameraTransform,
+    EaseOutQuad, EaseInOutCubic, kf, sampleFloatTrack,
+    hitStop, visualTimeWithHitStops,
+    solveTwoBoneIk, sampleCatmullRom, buildTaperedPolygon,
+    Particle2D, MkBurstConfig, spawnBurst2D, stepParticles2D, drawParticles2D
+}
+use crema.app.{
+    Cmd, CmdNone, cmdNone,
+    AppConfig, MkAppConfig, Runtime,
+    runtimeCreate, rtStepFrame, rtPointerMove, rtPointerClick, rtPointerDrag,
+    rtScrollWheel, rtTextInput, rtTextSubmit, rtBlurInput, rtKeyDown
+}
+use crema.host.envHost
+
+// ============================================================================
+// 1. Isolated Reusable Sub-Component (`ParamControl`) Composed via `Functor.fmap`
+// ============================================================================
+
+data ParamModel {
+    MkParamModel {
+        pmTitle: String,
+        pmValue: Int,
+        pmMax: Int,
+        pmColor: Color,
+    },
+}
+
+data ParamMsg {
+    IncParam,
+    DecParam,
+}
+
+def updateParam(m: ParamMsg, st: ParamModel): ParamModel = match m {
+    IncParam -> MkParamModel {
+        pmTitle: st.pmTitle,
+        pmValue: if (st.pmValue + 5 > st.pmMax) st.pmMax else st.pmValue + 5,
+        pmMax: st.pmMax,
+        pmColor: st.pmColor,
+    },
+    DecParam -> MkParamModel {
+        pmTitle: st.pmTitle,
+        pmValue: if (st.pmValue - 5 < 5) 5 else st.pmValue - 5,
+        pmMax: st.pmMax,
+        pmColor: st.pmColor,
+    },
+}
+
+def viewParam(th: Theme, idPrefix: String, st: ParamModel): Element ParamMsg = {
+    let ratio = intToFloat(st.pmValue) / intToFloat(st.pmMax);
+    col([wGrow(1.0), gap(6.0), pad(10.0), bg(withAlpha(th.thSurfaceBot, 0.85)), border(0.8, th.thBorder), rounded(6.0)], [
+        row([wGrow(1.0), alignY(AlignMid)], [
+            label(fontSans(13.0, 700), th.thInk, st.pmTitle),
+            growSpacer(),
+            label(fontMono(12.0, 600), th.thMuted, intToStr(st.pmValue) + " / " + intToStr(st.pmMax))
+        ]),
+        progressBar(
+            [wGrow(1.0), hFixed(7.0)],
+            ratio, ratio,
+            st.pmColor, st.pmColor, 0, th.thScrollTrack, ""
+        ),
+        row([wGrow(1.0), gap(6.0)], [
+            outlineButton(th, idPrefix + "-dec", false, "-5", Some(DecParam)),
+            outlineButton(th, idPrefix + "-inc", false, "+5", Some(IncParam))
+        ])
+    ])
+}
+
+// ============================================================================
+// 2. Main Application Model & Messages
+// ============================================================================
+
+data StudioMsg {
+    ToggleDarkTheme,
+    TriggerPulse(String),
+    ClickBeacon(Vec2),
+    PanStage(Float, Float),
+    ZoomStage(Float),
+    EnergyParamMsg(ParamMsg),
+    SpeedParamMsg(ParamMsg),
+    UpdateNoteDraft(String),
+    SubmitNote,
+}
+
+data StudioModel {
+    MkStudioModel {
+        smDark: Bool,
+        smEnergy: ParamModel,
+        smSpeed: ParamModel,
+        smDraft: String,
+        smLogs: List String,
+        smPulses: Int,
+        smStatus: String,
+        smAnimElapsedMs: Float,
+        smAnimActive: Bool,
+        smAnimKind: String,
+        smTargetCharge: Int,
+        smTargetTrail: Float,
+        smCam: Camera2D,
+        smParticles: List Particle2D,
+        smClockSec: Float,
+    },
+}
+
+def initStudio(_vp: Rect): (StudioModel, Cmd StudioMsg) = (
+    MkStudioModel {
+        smDark: false,
+        smEnergy: MkParamModel { pmTitle: "Burst Energy", pmValue: 65, pmMax: 100, pmColor: hexColor("#2563eb") },
+        smSpeed: MkParamModel { pmTitle: "Motion Speed", pmValue: 75, pmMax: 100, pmColor: hexColor("#0d9488") },
+        smDraft: "",
+        smLogs: [
+            "[Crema] Declarative UI & 2D Stage framework running from pure Geisha source.",
+            "[Stage] Move pointer across the canvas to drive live 2-Bone IK; drag to pan, wheel to zoom.",
+            "[Targets] Same app.gsa builds for WebAssembly (Canvas2D) and native macOS (Cocoa/Quartz2D)."
+        ],
+        smPulses: 0,
+        smStatus: "2-Bone IK Ready",
+        smAnimElapsedMs: 0.0,
+        smAnimActive: true,
+        smAnimKind: "arc",
+        smTargetCharge: 148,
+        smTargetTrail: 1.0,
+        smCam: cameraNew(0.0, -24.0, 1.0),
+        smParticles: spawnBurst2D(MkBurstConfig {
+            bcOrigin: vec2(98.0, -44.0),
+            bcCount: 28,
+            bcBaseAngleRad: -0.6,
+            bcSpreadRad: 2.2,
+            bcMinSpeed: 70.0,
+            bcMaxSpeed: 230.0,
+            bcMinRadius: 2.2,
+            bcMaxRadius: 5.5,
+            bcLifeSec: 0.85,
+            bcDrag: 2.6,
+            bcGravity: 240.0,
+            bcColor: hexColor("#2563eb"),
+            bcSeed: 42,
+        }),
+        smClockSec: 0.0,
+    },
+    cmdNone()
+)
+
+def triggerPulse(kind: String, targetWorld: Vec2, st: StudioModel): (StudioModel, Cmd StudioMsg) = {
+    let delta = if (kind == "burst") 24 + st.smEnergy.pmValue / 5 else 14 + st.smEnergy.pmValue / 8;
+    let nextCharge = if (st.smTargetCharge - delta <= 0) 180 else st.smTargetCharge - delta;
+    let title = if (kind == "burst") "Heavy Impulse" else "Arc Sweep";
+    let burstCol = if (kind == "burst") hexColor("#d97706") else hexColor("#2563eb");
+    let newPts = spawnBurst2D(MkBurstConfig {
+        bcOrigin: targetWorld,
+        bcCount: 32,
+        bcBaseAngleRad: -0.45,
+        bcSpreadRad: 2.6,
+        bcMinSpeed: 85.0,
+        bcMaxSpeed: 280.0,
+        bcMinRadius: 2.4,
+        bcMaxRadius: 6.0,
+        bcLifeSec: 0.75,
+        bcDrag: 2.8,
+        bcGravity: 260.0,
+        bcColor: burstCol,
+        bcSeed: st.smPulses * 37 + roundInt(st.smClockSec * 100.0),
+    });
+    let logEntry = title + " triggered (-" + intToStr(delta) + ", count x" + intToStr(st.smPulses + 1) + ")";
+    (
+        MkStudioModel {
+            smDark: st.smDark,
+            smEnergy: st.smEnergy,
+            smSpeed: st.smSpeed,
+            smDraft: st.smDraft,
+            smLogs: listAppend(st.smLogs, [logEntry]),
+            smPulses: st.smPulses + 1,
+            smStatus: title,
+            smAnimElapsedMs: 0.0,
+            smAnimActive: true,
+            smAnimKind: kind,
+            smTargetCharge: nextCharge,
+            smTargetTrail: st.smTargetTrail,
+            smCam: cameraAddTrauma(st.smCam, if (kind == "burst") 0.52 else 0.32),
+            smParticles: listAppend(st.smParticles, newPts),
+            smClockSec: st.smClockSec,
+        },
+        CmdNone
+    )
+}
+
+def updateStudio(msg: StudioMsg, st: StudioModel): (StudioModel, Cmd StudioMsg) = match msg {
+    ToggleDarkTheme -> (
+        MkStudioModel {
+            smDark: !st.smDark, smEnergy: st.smEnergy, smSpeed: st.smSpeed,
+            smDraft: st.smDraft, smLogs: st.smLogs, smPulses: st.smPulses,
+            smStatus: st.smStatus, smAnimElapsedMs: st.smAnimElapsedMs,
+            smAnimActive: st.smAnimActive, smAnimKind: st.smAnimKind,
+            smTargetCharge: st.smTargetCharge, smTargetTrail: st.smTargetTrail,
+            smCam: st.smCam, smParticles: st.smParticles, smClockSec: st.smClockSec,
+        },
+        CmdNone
+    ),
+    TriggerPulse(kind) -> triggerPulse(kind, vec2(105.0, -48.0), st),
+    ClickBeacon(wpt) -> triggerPulse("arc", wpt, st),
+    PanStage(dx, dy) -> (
+        MkStudioModel {
+            smDark: st.smDark, smEnergy: st.smEnergy, smSpeed: st.smSpeed,
+            smDraft: st.smDraft, smLogs: st.smLogs, smPulses: st.smPulses,
+            smStatus: st.smStatus, smAnimElapsedMs: st.smAnimElapsedMs,
+            smAnimActive: st.smAnimActive, smAnimKind: st.smAnimKind,
+            smTargetCharge: st.smTargetCharge, smTargetTrail: st.smTargetTrail,
+            smCam: cameraPan(st.smCam, dx, dy), smParticles: st.smParticles, smClockSec: st.smClockSec,
+        },
+        CmdNone
+    ),
+    ZoomStage(factor) -> (
+        MkStudioModel {
+            smDark: st.smDark, smEnergy: st.smEnergy, smSpeed: st.smSpeed,
+            smDraft: st.smDraft, smLogs: st.smLogs, smPulses: st.smPulses,
+            smStatus: st.smStatus, smAnimElapsedMs: st.smAnimElapsedMs,
+            smAnimActive: st.smAnimActive, smAnimKind: st.smAnimKind,
+            smTargetCharge: st.smTargetCharge, smTargetTrail: st.smTargetTrail,
+            smCam: cameraZoomBy(st.smCam, factor), smParticles: st.smParticles, smClockSec: st.smClockSec,
+        },
+        CmdNone
+    ),
+    EnergyParamMsg(cm) -> (
+        MkStudioModel {
+            smDark: st.smDark, smEnergy: updateParam(cm, st.smEnergy), smSpeed: st.smSpeed,
+            smDraft: st.smDraft, smLogs: st.smLogs, smPulses: st.smPulses,
+            smStatus: st.smStatus, smAnimElapsedMs: st.smAnimElapsedMs,
+            smAnimActive: st.smAnimActive, smAnimKind: st.smAnimKind,
+            smTargetCharge: st.smTargetCharge, smTargetTrail: st.smTargetTrail,
+            smCam: st.smCam, smParticles: st.smParticles, smClockSec: st.smClockSec,
+        },
+        CmdNone
+    ),
+    SpeedParamMsg(cm) -> (
+        MkStudioModel {
+            smDark: st.smDark, smEnergy: st.smEnergy, smSpeed: updateParam(cm, st.smSpeed),
+            smDraft: st.smDraft, smLogs: st.smLogs, smPulses: st.smPulses,
+            smStatus: st.smStatus, smAnimElapsedMs: st.smAnimElapsedMs,
+            smAnimActive: st.smAnimActive, smAnimKind: st.smAnimKind,
+            smTargetCharge: st.smTargetCharge, smTargetTrail: st.smTargetTrail,
+            smCam: st.smCam, smParticles: st.smParticles, smClockSec: st.smClockSec,
+        },
+        CmdNone
+    ),
+    UpdateNoteDraft(txt) -> (
+        MkStudioModel {
+            smDark: st.smDark, smEnergy: st.smEnergy, smSpeed: st.smSpeed,
+            smDraft: txt, smLogs: st.smLogs, smPulses: st.smPulses,
+            smStatus: st.smStatus, smAnimElapsedMs: st.smAnimElapsedMs,
+            smAnimActive: st.smAnimActive, smAnimKind: st.smAnimKind,
+            smTargetCharge: st.smTargetCharge, smTargetTrail: st.smTargetTrail,
+            smCam: st.smCam, smParticles: st.smParticles, smClockSec: st.smClockSec,
+        },
+        CmdNone
+    ),
+    SubmitNote ->
+        if (strLen(st.smDraft) == 0) (st, CmdNone)
+        else (
+            MkStudioModel {
+                smDark: st.smDark, smEnergy: st.smEnergy, smSpeed: st.smSpeed,
+                smDraft: "",
+                smLogs: listAppend(st.smLogs, ["[Note] " + st.smDraft]),
+                smPulses: st.smPulses,
+                smStatus: st.smStatus, smAnimElapsedMs: st.smAnimElapsedMs,
+                smAnimActive: st.smAnimActive, smAnimKind: st.smAnimKind,
+                smTargetCharge: st.smTargetCharge, smTargetTrail: st.smTargetTrail,
+                smCam: st.smCam, smParticles: st.smParticles, smClockSec: st.smClockSec,
+            },
+            CmdNone
+        ),
+}
+
+def tickStudio(dtMs: Float, _vp: Rect, st: StudioModel): (StudioModel, Cmd StudioMsg) = {
+    let dtSec = clampFloat(0.001, 0.1, dtMs / 1000.0);
+    let spdScale = 0.55 + intToFloat(st.smSpeed.pmValue) / 100.0;
+    let nextAnimMs = if (st.smAnimActive) st.smAnimElapsedMs + dtMs * spdScale else 0.0;
+    let stillActive = st.smAnimActive && nextAnimMs < 760.0;
+    let chargeRatio = intToFloat(st.smTargetCharge) / 180.0;
+    let nextTrail =
+        if (st.smTargetTrail > chargeRatio) {
+            let d = st.smTargetTrail - dtSec * 0.38;
+            if (d < chargeRatio) chargeRatio else d
+        } else chargeRatio;
+    (
+        MkStudioModel {
+            smDark: st.smDark,
+            smEnergy: st.smEnergy,
+            smSpeed: st.smSpeed,
+            smDraft: st.smDraft,
+            smLogs: st.smLogs,
+            smPulses: st.smPulses,
+            smStatus: st.smStatus,
+            smAnimElapsedMs: if (stillActive) nextAnimMs else 0.0,
+            smAnimActive: stillActive,
+            smAnimKind: st.smAnimKind,
+            smTargetCharge: st.smTargetCharge,
+            smTargetTrail: nextTrail,
+            smCam: cameraStep(st.smCam, dtSec, 12.0, false),
+            smParticles: stepParticles2D(st.smParticles, dtSec),
+            smClockSec: st.smClockSec + dtSec,
+        },
+        CmdNone
+    )
+}
+
+// ============================================================================
+// 3. Embedded 2D Interactive Stage (`canvasInteractive` inside Flexbox UI)
+// ============================================================================
+
+def renderStudioStage(
+    th: Theme,
+    st: StudioModel,
+    stageRect: Rect,
+    pointerScreen: Vec2,
+    _hoveredKey: String,
+    dl: DrawList
+): List (CanvasHit StudioMsg) = {
+    let (visMs, inHitStop) = visualTimeWithHitStops([hitStop(210.0, 95.0)], st.smAnimElapsedMs);
+    let slideTrack = [
+        kf(0.0, 0.0, EaseOutQuad),
+        kf(210.0, 76.0, EaseOutQuad),
+        kf(665.0, 0.0, EaseInOutCubic)
+    ];
+    let slideX = if (st.smAnimActive) sampleFloatTrack(slideTrack, visMs, 0.0) else 0.0;
+
+    // Subtle ambient backdrop ring
+    let haloCol = withAlpha(th.thPrimary, if (st.smDark) 0.14 else 0.08);
+    drawCircle(dl, stageRect.rx + stageRect.rw * 0.54, stageRect.ry + stageRect.rh * 0.46, 112.0, haloCol, 0, 0.0);
+
+    let ptrInside =
+        pointerScreen.vx >= stageRect.rx && pointerScreen.vx <= stageRect.rx + stageRect.rw
+        && pointerScreen.vy >= stageRect.ry && pointerScreen.vy <= stageRect.ry + stageRect.rh;
+    let worldPtr = screenToWorld(st.smCam, stageRect, pointerScreen, false);
+    let rigBase = vec2(-96.0 + slideX, 58.0);
+    let shoulder = vec2(rigBase.vx, rigBase.vy - 78.0);
+
+    let animTip = vec2(
+        102.0,
+        if (st.smAnimKind == "burst") -38.0 + sin(visMs * 0.015) * 18.0
+        else -54.0 + cos(visMs * 0.012) * 24.0
+    );
+    let desiredTip =
+        if (st.smAnimActive) animTip
+        else if (ptrInside) worldPtr
+        else vec2(48.0, -48.0 + sin(st.smClockSec * 2.4) * 14.0);
+
+    // Solve 2-Bone Analytic IK for upper link (58px) + forearm link (86px)
+    let (elbow, reachedTip) = solveTwoBoneIk(shoulder, desiredTip, 58.0, 86.0, -1.0);
+    let foreDir = vNorm(vSub(reachedTip, elbow));
+    let wrist = vAdd(elbow, vScale(foreDir, 44.0));
+
+    let beaconPos = vec2(115.0, 58.0);
+    let beaconCenter = vec2(beaconPos.vx, beaconPos.vy - 62.0);
+    let beaconHitScreen = worldToScreen(st.smCam, stageRect, beaconCenter, false);
+
+    withCameraTransform(dl, st.smCam, stageRect, false, () -> {
+        // Ground horizon & contact shadows
+        drawLine(dl, -260.0, 62.0, 260.0, 62.0, 1.4, withAlpha(th.thMuted, 0.45), false);
+        drawEllipse(dl, rigBase.vx, 63.0, 38.0, 6.5, rgba(15, 23, 42, 36), 0, 0.0);
+        drawEllipse(dl, beaconPos.vx, 63.0, 28.0, 6.5, rgba(15, 23, 42, 36), 0, 0.0);
+
+        // Clickable target beacon pylon
+        let beaconFlash = st.smAnimActive && visMs >= 195.0 && visMs <= 340.0;
+        let beaconCol = if (beaconFlash) th.thAccent else th.thPrimary;
+        drawCard(dl, rect(beaconPos.vx - 8.0, beaconPos.vy - 52.0, 16.0, 52.0), 4.0, th.thMuted, th.thMuted, th.thInk, 1.0, 0, 0.0, 0.0);
+        drawCircle(dl, beaconCenter.vx, beaconCenter.vy, 24.0, withAlpha(beaconCol, 0.18), beaconCol, 1.4);
+        drawCircle(dl, beaconCenter.vx, beaconCenter.vy, 13.0, beaconCol, th.thSurfaceTop, 2.0);
+
+        // Articulated 2-Bone IK arm mounted on base pedestal
+        let bodyCol = if (inHitStop) th.thAccent else th.thInk;
+        let outlineCol = th.thSurfaceTop;
+        drawCard(dl, rect(rigBase.vx - 26.0, rigBase.vy - 18.0, 52.0, 18.0), 6.0, bodyCol, bodyCol, outlineCol, 1.2, 0, 0.0, 0.0);
+        drawPolygon(dl, buildTaperedPolygon([vec2(rigBase.vx, rigBase.vy - 18.0), shoulder], 11.0, 7.5), bodyCol, outlineCol, 1.2);
+        drawPolygon(dl, buildTaperedPolygon([shoulder, elbow], 7.0, 5.2), bodyCol, outlineCol, 1.2);
+        drawPolygon(dl, buildTaperedPolygon([elbow, wrist], 5.2, 3.8), bodyCol, outlineCol, 1.2);
+        drawPolygon(dl, buildTaperedPolygon([wrist, reachedTip], 3.4, 1.2), th.thPrimary, 0, 0.0);
+
+        // Animated trailing spline tail
+        let sway = sin(st.smClockSec * 4.0) * 7.0;
+        let cableCurve = sampleCatmullRom([
+            vec2(shoulder.vx - 4.0, shoulder.vy),
+            vec2(shoulder.vx - 28.0, shoulder.vy + 10.0 + sway * 0.4),
+            vec2(shoulder.vx - 50.0, shoulder.vy + 26.0 + sway),
+            vec2(shoulder.vx - 68.0, shoulder.vy + 46.0 + sway * 1.1)
+        ], 5);
+        drawPolygon(dl, buildTaperedPolygon(cableCurve, 4.2, 1.2), withAlpha(th.thMuted, 0.8), 0, 0.0);
+
+        // Motion trail ribbon
+        let arcPts = sampleCatmullRom([
+            vec2(shoulder.vx + 18.0, shoulder.vy - 36.0),
+            vec2((shoulder.vx + reachedTip.vx) * 0.5 + 16.0, (shoulder.vy + reachedTip.vy) * 0.5 - 24.0),
+            reachedTip
+        ], 6);
+        let ribSamples = listMap(arcPts, (p) -> (p.vx, p.vy, if (st.smAnimActive) 9.5 else 4.0));
+        drawRibbon(
+            dl,
+            ribSamples,
+            if (st.smAnimKind == "burst") th.thAccent else th.thPrimary,
+            if (st.smAnimActive) 0.85 else 0.35
+        );
+
+        // Particles in world space
+        drawParticles2D(dl, st.smParticles);
+
+        // Joint pins showing live 2-Bone IK solution
+        drawCircle(dl, shoulder.vx, shoulder.vy, 5.2, th.thSurfaceTop, bodyCol, 2.0);
+        drawCircle(dl, elbow.vx, elbow.vy, 4.2, th.thAccent, 0, 0.0);
+        drawCircle(dl, reachedTip.vx, reachedTip.vy, 4.0, th.thDanger, 0, 0.0)
+    });
+
+    // Stage HUD badge
+    let bx = stageRect.rx + stageRect.rw * 0.5;
+    let by = stageRect.ry + 18.0;
+    drawCard(dl, rect(bx - 76.0, by, 152.0, 30.0), 6.0, th.thSurfaceTop, th.thSurfaceBot, th.thBorder, 1.0, th.thShadow, 2.0, 8.0);
+    drawText(dl, bx, by + 19.5, fontSans(13.0, 700), AlignCenter, th.thInk, st.smStatus);
+
+    let tipAngle = roundInt(radToDeg(atan2(reachedTip.vy - wrist.vy, reachedTip.vx - wrist.vx)));
+    drawText(
+        dl,
+        stageRect.rx + stageRect.rw - 14.0,
+        stageRect.ry + stageRect.rh - 12.0,
+        fontMono(11.0, 500),
+        AlignRight,
+        th.thMuted,
+        "2-Bone IK theta=" + intToStr(tipAngle) + " deg · Particles=" + intToStr(listLen(st.smParticles)) + (if (inHitStop) " · [HIT-STOP]" else "")
+    );
+
+    [
+        canvasHit(
+            rect(beaconHitScreen.vx - 30.0, beaconHitScreen.vy - 30.0, 60.0, 60.0),
+            "stage-beacon",
+            "pointer",
+            ClickBeacon(beaconCenter)
+        )
+    ]
+}
+
+// ============================================================================
+// 4. Declarative Flexbox + ScrollView + Canvas View Tree
+// ============================================================================
+
+def viewStudio(_vp: Rect, st: StudioModel): Element StudioMsg = {
+    let th = if (st.smDark) themeDark() else themeLight();
+    let chargeRatio = clamp01(intToFloat(st.smTargetCharge) / 180.0);
+
+    col([fillSpace(), pad(18.0), gap(14.0)], [
+        // Top Header Card
+        card(th, [wGrow(1.0), padXY(18.0, 12.0)], [
+            row([wGrow(1.0), alignY(AlignMid), gap(12.0)], [
+                badge("CREMA", th.thPrimaryText, th.thPrimary, th.thPrimaryHover),
+                heading(th, 19.0, "Declarative UI & 2D Stage Studio"),
+                mutedText(th, 12.5, "Binary DrawList · Flexbox · Functor.fmap · 2-Bone IK"),
+                growSpacer(),
+                badge("Pulses x" + intToStr(st.smPulses), th.thPrimary, withAlpha(th.thPrimary, 0.12), withAlpha(th.thPrimary, 0.35)),
+                outlineButton(th, "btn-theme", st.smDark, if (st.smDark) "Light Theme" else "Dark Theme", Some(ToggleDarkTheme))
+            ])
+        ]),
+
+        // Main Split Workspace: Left Controls + Right Interactive 2D Stage
+        row([fillSpace(), gap(16.0), alignY(AlignStretch)], [
+            // Left Column (Fixed 400px): Functor Sub-Components + Scrollable Log + Text Input
+            col([wFixed(400.0), hGrow(1.0), gap(14.0)], [
+                card(th, [wGrow(1.0), gap(10.0)], [
+                    row([wGrow(1.0), alignY(AlignMid)], [
+                        heading(th, 15.0, "Component Composition (Functor.fmap)"),
+                        growSpacer(),
+                        mutedText(th, 11.5, "Isolated state")
+                    ]),
+                    row([wGrow(1.0), gap(10.0)], [
+                        fmap(EnergyParamMsg, viewParam(th, "eng", st.smEnergy)),
+                        fmap(SpeedParamMsg, viewParam(th, "spd", st.smSpeed))
+                    ])
+                ]),
+
+                card(th, [fillSpace(), gap(10.0)], [
+                    row([wGrow(1.0), alignY(AlignMid)], [
+                        heading(th, 15.0, "Activity Log"),
+                        growSpacer(),
+                        mutedText(th, 11.5, intToStr(listLen(st.smLogs)) + " entries")
+                    ]),
+                    scrollView("studio-logs", [fillSpace(), pad(8.0), bg(withAlpha(th.thSurfaceBot, 0.7)), border(0.8, th.thBorder), rounded(5.0)],
+                        col([wGrow(1.0), gap(6.0)],
+                            listMap(listRev(st.smLogs), (entry) ->
+                                paragraph(fontSans(12.5, 500), 18.0, th.thInk, entry)
+                            )
+                        )
+                    ),
+                    row([wGrow(1.0), gap(8.0), alignY(AlignMid)], [
+                        textInput(th, "studio-note", [wGrow(1.0)], "Add a note (UTF-8 / CJK IME)…", st.smDraft, UpdateNoteDraft, Some(SubmitNote)),
+                        button(th, "btn-send-note", "Log", Some(SubmitNote))
+                    ])
+                ])
+            ]),
+
+            // Right Column (Grow): Embedded 2D Stage + Action Toolbar
+            card(th, [fillSpace(), gap(10.0)], [
+                row([wGrow(1.0), alignY(AlignMid), gap(12.0)], [
+                    heading(th, 15.0, "2D Kinematics Stage (Click beacon, drag to pan, wheel to zoom)"),
+                    growSpacer(),
+                    mutedText(th, 12.0, "Charge " + intToStr(st.smTargetCharge) + " / 180"),
+                    progressBar(
+                        [wFixed(160.0), hFixed(9.0)],
+                        chargeRatio, st.smTargetTrail,
+                        th.thPrimary, th.thPrimaryHover, withAlpha(th.thAccent, 0.55), th.thScrollTrack, ""
+                    )
+                ]),
+
+                canvasInteractive(
+                    [fillSpace(), bg(if (st.smDark) hexColor("#0b1120") else hexColor("#f1f5f9")), border(1.0, th.thBorder), rounded(6.0), clipped(true)],
+                    Some((_r, _cur, delta) -> PanStage(delta.vx, delta.vy)),
+                    Some((_r, _cur, dy) -> ZoomStage(if (dy < 0.0) 1.09 else 0.92)),
+                    (r, ptr, hk, dl) -> renderStudioStage(th, st, r, ptr, hk, dl)
+                ),
+
+                row([wGrow(1.0), gap(8.0), alignY(AlignMid)], [
+                    button(th, "btn-arc", "Arc Sweep (J)", Some(TriggerPulse("arc"))),
+                    button(th, "btn-burst", "Heavy Impulse (K)", Some(TriggerPulse("burst"))),
+                    spacer(8.0, 1.0),
+                    outlineButton(th, "btn-zoom-in", false, "Zoom +", Some(ZoomStage(1.15))),
+                    outlineButton(th, "btn-zoom-out", false, "Zoom -", Some(ZoomStage(0.87))),
+                    growSpacer(),
+                    mutedText(th, 11.5, "Keys: J Arc · K Burst · T Theme")
+                ])
+            ])
+        ])
+    ])
+}
+
+def studioAppConfig(dark: Bool): AppConfig StudioModel StudioMsg = MkAppConfig {
+    appTheme: if (dark) themeDark() else themeLight(),
+    appDynamicTheme: Some((st) -> if (st.smDark) themeDark() else themeLight()),
+    appInit: initStudio,
+    appUpdate: updateStudio,
+    appView: viewStudio,
+    appTick: Some(tickStudio),
+    appOnKey: Some((k) -> match k {
+        "j" -> Some(TriggerPulse("arc")),
+        "J" -> Some(TriggerPulse("arc")),
+        "k" -> Some(TriggerPulse("burst")),
+        "K" -> Some(TriggerPulse("burst")),
+        "t" -> Some(ToggleDarkTheme),
+        "T" -> Some(ToggleDarkTheme),
+        _ -> None,
+    }),
+}
+
+// ============================================================================
+// 5. Exported Host Entry Points (Shared by `wasm32` Web & `native` macOS Hosts)
+// ============================================================================
+
+def globalRuntime: Cell (Option (Runtime StudioModel StudioMsg)) = cellNew(None)
+
+def main(): Void = ()
+
+pub def crema_init(w: Float, h: Float): Void = {
+    let rt = runtimeCreate(studioAppConfig(false), w, h, envHost());
+    cellSet(globalRuntime, Some(rt))
+}
+
+pub def crema_step_frame(dtMs: Float, w: Float, h: Float): Bool = match cellGet(globalRuntime) {
+    None -> false,
+    Some(rt) -> rtStepFrame(rt, dtMs, w, h),
+}
+
+pub def crema_pointer_move(x: Float, y: Float): Void = match cellGet(globalRuntime) {
+    None -> (),
+    Some(rt) -> rtPointerMove(rt, x, y),
+}
+
+pub def crema_pointer_click(x: Float, y: Float): Void = match cellGet(globalRuntime) {
+    None -> (),
+    Some(rt) -> rtPointerClick(rt, x, y),
+}
+
+pub def crema_pointer_drag(sx: Float, sy: Float, cx: Float, cy: Float, dx: Float, dy: Float): Void = match cellGet(globalRuntime) {
+    None -> (),
+    Some(rt) -> rtPointerDrag(rt, sx, sy, cx, cy, dx, dy),
+}
+
+pub def crema_scroll_wheel(x: Float, y: Float, dy: Float): Void = match cellGet(globalRuntime) {
+    None -> (),
+    Some(rt) -> rtScrollWheel(rt, x, y, dy),
+}
+
+pub def crema_text_input(inpId: String, val: String): Void = match cellGet(globalRuntime) {
+    None -> (),
+    Some(rt) -> rtTextInput(rt, inpId, val),
+}
+
+pub def crema_text_submit(inpId: String): Void = match cellGet(globalRuntime) {
+    None -> (),
+    Some(rt) -> rtTextSubmit(rt, inpId),
+}
+
+pub def crema_blur_input(): Void = match cellGet(globalRuntime) {
+    None -> (),
+    Some(rt) -> rtBlurInput(rt),
+}
+
+pub def crema_key_down(key: String): Void = match cellGet(globalRuntime) {
+    None -> (),
+    Some(rt) -> rtKeyDown(rt, key),
+}

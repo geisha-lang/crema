@@ -6,6 +6,7 @@
 
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +20,7 @@ extern void crema_init(double w, double h, void *fv);
 extern uint8_t crema_step_frame(double dt_ms, double w, double h, void *fv);
 extern void crema_pointer_move(double x, double y, void *fv);
 extern void crema_pointer_click(double x, double y, void *fv);
+extern void crema_pointer_drag(double sx, double sy, double cx, double cy, double dx, double dy, void *fv);
 extern void crema_scroll_wheel(double x, double y, double dy, void *fv);
 extern void crema_key_down(const char *key, void *fv);
 
@@ -38,6 +40,22 @@ static NSColor *ns_color_from_rgba32(int32_t c) {
     CGFloat b = ((u >> 8)  & 0xFF) / 255.0;
     CGFloat a = (u & 0xFF) / 255.0;
     return [NSColor colorWithSRGBRed:r green:g blue:b alpha:a];
+}
+
+static NSFont *crema_font(int32_t famCode, CGFloat sz, int32_t wtClass) {
+    NSFontWeight wt = wtClass >= 7 ? NSFontWeightBold : (wtClass >= 6 ? NSFontWeightSemibold : NSFontWeightRegular);
+    if (famCode == 2) {
+        return [NSFont monospacedSystemFontOfSize:sz weight:wt];
+    }
+    NSFont *base = [NSFont systemFontOfSize:sz weight:wt];
+    if (famCode == 1) {
+        NSFontDescriptor *desc = [base.fontDescriptor fontDescriptorWithDesign:NSFontDescriptorSystemDesignSerif];
+        if (desc) {
+            NSFont *serif = [NSFont fontWithDescriptor:desc size:sz];
+            if (serif) return serif;
+        }
+    }
+    return base;
 }
 
 // Latest presented frame command snapshot for Cocoa `drawRect:`
@@ -86,21 +104,6 @@ void crema_host_focus_ime(const char *inp_id, const char *val, double x, double 
 
 void crema_host_blur_ime(void) {}
 
-void crema_host_play_sfx(const char *sfx_id) {
-    if (sfx_id && strcmp(sfx_id, "parry") == 0) NSBeep();
-}
-
-void crema_host_save_local(const char *key, const char *val) {
-    if (!key || !val) return;
-    [[NSUserDefaults standardUserDefaults] setObject:[NSString stringWithUTF8String:val]
-                                              forKey:[NSString stringWithUTF8String:key]];
-}
-
-void crema_host_send_net(const char *payload) { (void)payload; }
-void crema_host_connect_net(const char *mode, const char *user, const char *token) {
-    (void)mode; (void)user; (void)token;
-}
-
 static void cg_add_round_rect(CGContextRef cg, CGRect r, CGFloat rad) {
     CGFloat maxR = fmin(r.size.width, r.size.height) * 0.5;
     CGFloat cr = fmax(0.0, fmin(rad, maxR));
@@ -113,7 +116,12 @@ static void cg_add_round_rect(CGContextRef cg, CGRect r, CGFloat rad) {
     }
 }
 
-@interface CremaCanvasView : NSView
+@interface CremaCanvasView : NSView {
+    BOOL _dragging;
+    BOOL _dragMoved;
+    NSPoint _startPt;
+    NSPoint _lastPt;
+}
 @end
 
 @implementation CremaCanvasView
@@ -143,7 +151,34 @@ static void cg_add_round_rect(CGContextRef cg, CGRect r, CGFloat rad) {
 
 - (void)mouseDown:(NSEvent *)ev {
     NSPoint p = [self localPt:ev];
-    crema_pointer_click(p.x, p.y, NULL);
+    _dragging = YES;
+    _dragMoved = NO;
+    _startPt = p;
+    _lastPt = p;
+}
+
+- (void)mouseDragged:(NSEvent *)ev {
+    if (!_dragging) return;
+    NSPoint p = [self localPt:ev];
+    if (!_dragMoved && hypot(p.x - _startPt.x, p.y - _startPt.y) > 8.0) {
+        _dragMoved = YES;
+    }
+    if (_dragMoved) {
+        double dx = p.x - _lastPt.x;
+        double dy = p.y - _lastPt.y;
+        _lastPt = p;
+        crema_pointer_drag(_startPt.x, _startPt.y, p.x, p.y, dx, dy, NULL);
+    }
+}
+
+- (void)mouseUp:(NSEvent *)ev {
+    BOOL wasTap = _dragging && !_dragMoved;
+    _dragging = NO;
+    _dragMoved = NO;
+    if (wasTap) {
+        NSPoint p = [self localPt:ev];
+        crema_pointer_click(p.x, p.y, NULL);
+    }
 }
 
 - (void)scrollWheel:(NSEvent *)ev {
@@ -177,7 +212,7 @@ static void cg_add_round_rect(CGContextRef cg, CGRect r, CGFloat rad) {
         int32_t aux = i32[w * 2 + 1];
         switch (op) {
             case 1: { // OP_CLEAR_BG
-                NSColor *cTop = ns_color_from_rgba32(i32[(w + 1) * 2]) ?: [NSColor colorWithSRGBRed:0.97 green:0.95 blue:0.91 alpha:1.0];
+                NSColor *cTop = ns_color_from_rgba32(i32[(w + 1) * 2]) ?: [NSColor whiteColor];
                 NSColor *cMid = ns_color_from_rgba32(i32[(w + 1) * 2 + 1]) ?: cTop;
                 NSColor *cBot = ns_color_from_rgba32(i32[(w + 2) * 2]) ?: cMid;
                 NSArray *cols = @[(__bridge id)cTop.CGColor, (__bridge id)cMid.CGColor, (__bridge id)cBot.CGColor];
@@ -224,12 +259,6 @@ static void cg_add_round_rect(CGContextRef cg, CGRect r, CGFloat rad) {
                         cg_add_round_rect(cg, r, rad);
                         CGContextSetStrokeColorWithColor(cg, cBd.CGColor);
                         CGContextSetLineWidth(cg, lw);
-                        CGContextStrokePath(cg);
-                    }
-                    if ((aux & 1) != 0 && r.size.width > 10 && r.size.height > 10) {
-                        cg_add_round_rect(cg, CGRectInset(r, 3.5, 3.5), fmax(1.0, rad - 1.0));
-                        CGContextSetRGBStrokeColor(cg, 0.61, 0.45, 0.17, 0.28);
-                        CGContextSetLineWidth(cg, 0.75);
                         CGContextStrokePath(cg);
                     }
                     CGContextRestoreGState(cg);
@@ -314,7 +343,7 @@ static void cg_add_round_rect(CGContextRef cg, CGRect r, CGFloat rad) {
                 w += 3 + nPts * 2;
                 break;
             }
-            case 7: { // OP_RIBBON — single smooth tapered slash polygon
+            case 7: { // OP_RIBBON — smooth tapered gradient ribbon polygon
                 int32_t nPts = aux;
                 NSColor *baseCol = ns_color_from_rgba32(i32[(w + 1) * 2]);
                 CGFloat baseAl = f64[w + 2];
@@ -370,11 +399,7 @@ static void cg_add_round_rect(CGContextRef cg, CGRect r, CGFloat rad) {
                     int32_t famCode = (styleBits >> 16) & 0xFF;
                     int32_t alignCode = (styleBits >> 8) & 0xFF;
                     int32_t wtClass = styleBits & 0xFF;
-                    NSFontWeight wt = wtClass >= 7 ? NSFontWeightBold : (wtClass >= 6 ? NSFontWeightSemibold : NSFontWeightRegular);
-                    NSFont *font = nil;
-                    if (famCode == 1) font = [NSFont fontWithName:@"Songti SC" size:sz] ?: [NSFont systemFontOfSize:sz weight:wt];
-                    else if (famCode == 2) font = [NSFont monospacedSystemFontOfSize:sz weight:wt];
-                    else font = [NSFont systemFontOfSize:sz weight:wt];
+                    NSFont *font = crema_font(famCode, sz, wtClass);
                     NSDictionary *attrs = @{NSFontAttributeName: font, NSForegroundColorAttributeName: col};
                     NSSize tsz = [txt sizeWithAttributes:attrs];
                     CGFloat drawX = alignCode == 1 ? (x - tsz.width * 0.5) : (alignCode == 2 ? (x - tsz.width) : x);
@@ -383,7 +408,7 @@ static void cg_add_round_rect(CGContextRef cg, CGRect r, CGFloat rad) {
                 w += 5;
                 break;
             }
-            case 9:   w += 7; break; // OP_IMAGE
+            case 9:   w += 7; break; // OP_IMAGE (placeholder for future native asset loader)
             case 10: { // OP_PUSH_CLIP
                 CGContextSaveGState(cg);
                 CGContextClipToRect(cg, CGRectMake(f64[w + 1], f64[w + 2], f64[w + 3], f64[w + 4]));
@@ -413,10 +438,7 @@ static void cg_add_round_rect(CGContextRef cg, CGRect r, CGFloat rad) {
                 NSColor *carCol  = ns_color_from_rgba32(i32[(w + 9) * 2 + 1]) ?: textCol;
                 int32_t famCode = (styleBits >> 16) & 0xFF;
                 int32_t wtClass = styleBits & 0xFF;
-                NSFontWeight wt = wtClass >= 7 ? NSFontWeightBold : (wtClass >= 6 ? NSFontWeightSemibold : NSFontWeightRegular);
-                NSFont *font = (famCode == 1)
-                    ? ([NSFont fontWithName:@"Songti SC" size:sz] ?: [NSFont systemFontOfSize:sz weight:wt])
-                    : ((famCode == 2) ? [NSFont monospacedSystemFontOfSize:sz weight:wt] : [NSFont systemFontOfSize:sz weight:wt]);
+                NSFont *font = crema_font(famCode, sz, wtClass);
                 CGFloat ix = bx + padX;
                 CGFloat iw = fmax(4.0, bw - padX * 2.0);
                 CGFloat ty = by + bh * 0.5 + sz * 0.36;
