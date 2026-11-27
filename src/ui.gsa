@@ -60,7 +60,6 @@ pub data BoxStyle {
         bsShadowCol: Color,
         bsShadowY: Float,
         bsShadowBlur: Float,
-        bsDoubleBorder: Bool,
         bsClip: Bool,
     },
 }
@@ -89,7 +88,6 @@ pub def defaultBoxStyle(): BoxStyle = MkBoxStyle {
     bsShadowCol: 0,
     bsShadowY: 0.0,
     bsShadowBlur: 0.0,
-    bsDoubleBorder: false,
     bsClip: false,
 }
 
@@ -114,7 +112,7 @@ pub def wFit(): StyleMod = (s) -> MkBoxStyle {
     bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
     bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
     bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
-    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+    bsClip: s.bsClip,
 }
 
 pub def hFit(): StyleMod = (s) -> MkBoxStyle {
@@ -123,7 +121,7 @@ pub def hFit(): StyleMod = (s) -> MkBoxStyle {
     bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
     bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
     bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
-    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+    bsClip: s.bsClip,
 }
 
 pub def wFixed(px: Float): StyleMod = (s) -> MkBoxStyle {
@@ -132,7 +130,7 @@ pub def wFixed(px: Float): StyleMod = (s) -> MkBoxStyle {
     bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
     bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
     bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
-    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+    bsClip: s.bsClip,
 }
 
 pub def hFixed(px: Float): StyleMod = (s) -> MkBoxStyle {
@@ -141,7 +139,7 @@ pub def hFixed(px: Float): StyleMod = (s) -> MkBoxStyle {
     bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
     bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
     bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
-    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+    bsClip: s.bsClip,
 }
 
 pub def fixedSize(w: Float, h: Float): StyleMod = (s) -> hFixed(h)(wFixed(w)(s))
@@ -152,7 +150,7 @@ pub def wGrow(weight: Float): StyleMod = (s) -> MkBoxStyle {
     bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
     bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
     bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
-    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+    bsClip: s.bsClip,
 }
 
 pub def hGrow(weight: Float): StyleMod = (s) -> MkBoxStyle {
@@ -161,7 +159,7 @@ pub def hGrow(weight: Float): StyleMod = (s) -> MkBoxStyle {
     bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
     bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
     bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
-    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+    bsClip: s.bsClip,
 }
 
 pub def fillSpace(): StyleMod = (s) -> hGrow(1.0)(wGrow(1.0)(s))
@@ -172,7 +170,7 @@ pub def wPct(pct01: Float): StyleMod = (s) -> MkBoxStyle {
     bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
     bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
     bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
-    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+    bsClip: s.bsClip,
 }
 
 pub def hPct(pct01: Float): StyleMod = (s) -> MkBoxStyle {
@@ -181,7 +179,7 @@ pub def hPct(pct01: Float): StyleMod = (s) -> MkBoxStyle {
     bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
     bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
     bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
-    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+    bsClip: s.bsClip,
 }
 
 pub def minW(px: Float): StyleMod = (s) -> MkBoxStyle {
@@ -190,7 +188,7 @@ pub def minW(px: Float): StyleMod = (s) -> MkBoxStyle {
     bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
     bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
     bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
-    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+    bsClip: s.bsClip,
 }
 
 pub def minH(px: Float): StyleMod = (s) -> MkBoxStyle {
@@ -199,7 +197,7 @@ pub def minH(px: Float): StyleMod = (s) -> MkBoxStyle {
     bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
     bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
     bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
-    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+    bsClip: s.bsClip,
 }
 
 pub def maxH(px: Float): StyleMod = (s) -> MkBoxStyle {
@@ -208,7 +206,7 @@ pub def maxH(px: Float): StyleMod = (s) -> MkBoxStyle {
     bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
     bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
     bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
-    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+    bsClip: s.bsClip,
 }
 
 pub def maxW(px: Float): StyleMod = (s) -> MkBoxStyle {
@@ -217,7 +215,7 @@ pub def maxW(px: Float): StyleMod = (s) -> MkBoxStyle {
     bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
     bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
     bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
-    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+    bsClip: s.bsClip,
 }
 
 pub def padTRBL(t: Float, r: Float, b: Float, l: Float): StyleMod = (s) -> MkBoxStyle {
@@ -226,7 +224,7 @@ pub def padTRBL(t: Float, r: Float, b: Float, l: Float): StyleMod = (s) -> MkBox
     bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
     bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
     bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
-    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+    bsClip: s.bsClip,
 }
 
 pub def padXY(px: Float, py: Float): StyleMod = padTRBL(py, px, py, px)
@@ -238,7 +236,7 @@ pub def gap(g: Float): StyleMod = (s) -> MkBoxStyle {
     bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
     bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
     bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
-    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+    bsClip: s.bsClip,
 }
 
 pub def alignX(ax: AlignItems): StyleMod = (s) -> MkBoxStyle {
@@ -247,7 +245,7 @@ pub def alignX(ax: AlignItems): StyleMod = (s) -> MkBoxStyle {
     bsAlignX: ax, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
     bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
     bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
-    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+    bsClip: s.bsClip,
 }
 
 pub def alignY(ay: AlignItems): StyleMod = (s) -> MkBoxStyle {
@@ -256,7 +254,7 @@ pub def alignY(ay: AlignItems): StyleMod = (s) -> MkBoxStyle {
     bsAlignX: s.bsAlignX, bsAlignY: ay, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
     bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
     bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
-    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+    bsClip: s.bsClip,
 }
 
 pub def centerContent(): StyleMod = (s) -> alignY(AlignMid)(alignX(AlignMid)(s))
@@ -267,7 +265,7 @@ pub def bgGrad(topCol: Color, botCol: Color): StyleMod = (s) -> MkBoxStyle {
     bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: topCol, bsFillBot: botCol,
     bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
     bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
-    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+    bsClip: s.bsClip,
 }
 
 pub def bg(col: Color): StyleMod = bgGrad(col, col)
@@ -278,7 +276,7 @@ pub def border(width: Float, col: Color): StyleMod = (s) -> MkBoxStyle {
     bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
     bsBorderCol: col, bsBorderW: maxFloat(0.0, width), bsRadius: s.bsRadius,
     bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
-    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+    bsClip: s.bsClip,
 }
 
 pub def rounded(r: Float): StyleMod = (s) -> MkBoxStyle {
@@ -287,7 +285,7 @@ pub def rounded(r: Float): StyleMod = (s) -> MkBoxStyle {
     bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
     bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: maxFloat(0.0, r),
     bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
-    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
+    bsClip: s.bsClip,
 }
 
 pub def shadow(offsetY: Float, blur: Float, col: Color): StyleMod = (s) -> MkBoxStyle {
@@ -296,16 +294,7 @@ pub def shadow(offsetY: Float, blur: Float, col: Color): StyleMod = (s) -> MkBox
     bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
     bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
     bsShadowCol: col, bsShadowY: offsetY, bsShadowBlur: maxFloat(0.0, blur),
-    bsDoubleBorder: s.bsDoubleBorder, bsClip: s.bsClip,
-}
-
-pub def doubleBorder(on: Bool): StyleMod = (s) -> MkBoxStyle {
-    bsWidth: s.bsWidth, bsHeight: s.bsHeight, bsMinW: s.bsMinW, bsMinH: s.bsMinH, bsMaxW: s.bsMaxW, bsMaxH: s.bsMaxH,
-    bsPadT: s.bsPadT, bsPadR: s.bsPadR, bsPadB: s.bsPadB, bsPadL: s.bsPadL, bsGap: s.bsGap,
-    bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
-    bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
-    bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
-    bsDoubleBorder: on, bsClip: s.bsClip,
+    bsClip: s.bsClip,
 }
 
 pub def clipped(on: Bool): StyleMod = (s) -> MkBoxStyle {
@@ -314,7 +303,7 @@ pub def clipped(on: Bool): StyleMod = (s) -> MkBoxStyle {
     bsAlignX: s.bsAlignX, bsAlignY: s.bsAlignY, bsFillTop: s.bsFillTop, bsFillBot: s.bsFillBot,
     bsBorderCol: s.bsBorderCol, bsBorderW: s.bsBorderW, bsRadius: s.bsRadius,
     bsShadowCol: s.bsShadowCol, bsShadowY: s.bsShadowY, bsShadowBlur: s.bsShadowBlur,
-    bsDoubleBorder: s.bsDoubleBorder, bsClip: on,
+    bsClip: on,
 }
 
 pub data Theme {
@@ -329,42 +318,51 @@ pub data Theme {
         thBorder: Color,
         thPrimary: Color,
         thPrimaryHover: Color,
+        thPrimaryText: Color,
         thAccent: Color,
         thDanger: Color,
         thShadow: Color,
+        thScrollTrack: Color,
+        thScrollThumb: Color,
     },
 }
 
-pub def themeXuanPaper(): Theme = MkTheme {
-    thBgTop: hexColor("#f7f3e9"),
-    thBgMid: hexColor("#efe8d9"),
-    thBgBot: hexColor("#e6dcc8"),
-    thSurfaceTop: hexColor("#faf6ee"),
-    thSurfaceBot: hexColor("#f2ebdc"),
-    thInk: hexColor("#1c1915"),
-    thMuted: hexColor("#6b6255"),
-    thBorder: rgba(130, 118, 98, 78),
-    thPrimary: hexColor("#275247"),
-    thPrimaryHover: hexColor("#1e4238"),
-    thAccent: hexColor("#9c722c"),
-    thDanger: hexColor("#9e2a22"),
-    thShadow: rgba(28, 22, 16, 28),
+pub def themeLight(): Theme = MkTheme {
+    thBgTop: hexColor("#f8fafc"),
+    thBgMid: hexColor("#f1f5f9"),
+    thBgBot: hexColor("#e2e8f0"),
+    thSurfaceTop: hexColor("#ffffff"),
+    thSurfaceBot: hexColor("#f8fafc"),
+    thInk: hexColor("#0f172a"),
+    thMuted: hexColor("#64748b"),
+    thBorder: rgba(15, 23, 42, 34),
+    thPrimary: hexColor("#2563eb"),
+    thPrimaryHover: hexColor("#1d4ed8"),
+    thPrimaryText: hexColor("#ffffff"),
+    thAccent: hexColor("#d97706"),
+    thDanger: hexColor("#dc2626"),
+    thShadow: rgba(15, 23, 42, 22),
+    thScrollTrack: rgba(15, 23, 42, 18),
+    thScrollThumb: rgba(100, 116, 139, 128),
 }
 
-pub def themeInkDark(): Theme = MkTheme {
-    thBgTop: hexColor("#17191c"),
-    thBgMid: hexColor("#131518"),
-    thBgBot: hexColor("#0f1114"),
-    thSurfaceTop: hexColor("#21252a"),
-    thSurfaceBot: hexColor("#1b1f24"),
-    thInk: hexColor("#f2ede2"),
-    thMuted: hexColor("#9ca3af"),
-    thBorder: rgba(212, 185, 130, 52),
-    thPrimary: hexColor("#357a68"),
-    thPrimaryHover: hexColor("#42947f"),
-    thAccent: hexColor("#d4a853"),
-    thDanger: hexColor("#c94a3f"),
-    thShadow: rgba(0, 0, 0, 96),
+pub def themeDark(): Theme = MkTheme {
+    thBgTop: hexColor("#0f172a"),
+    thBgMid: hexColor("#111827"),
+    thBgBot: hexColor("#0b1120"),
+    thSurfaceTop: hexColor("#1e293b"),
+    thSurfaceBot: hexColor("#172033"),
+    thInk: hexColor("#f8fafc"),
+    thMuted: hexColor("#94a3b8"),
+    thBorder: rgba(148, 163, 184, 48),
+    thPrimary: hexColor("#3b82f6"),
+    thPrimaryHover: hexColor("#60a5fa"),
+    thPrimaryText: hexColor("#ffffff"),
+    thAccent: hexColor("#f59e0b"),
+    thDanger: hexColor("#ef4444"),
+    thShadow: rgba(0, 0, 0, 108),
+    thScrollTrack: rgba(148, 163, 184, 24),
+    thScrollThumb: rgba(148, 163, 184, 118),
 }
 
 // ============================================================================
@@ -467,16 +465,13 @@ pub def card(theme: Theme, mods: List StyleMod, children: List (Element msg)): E
     let baseMods: List StyleMod = [
         bgGrad(theme.thSurfaceTop, theme.thSurfaceBot),
         border(1.0, theme.thBorder),
-        rounded(4.0),
+        rounded(6.0),
         shadow(4.0, 14.0, theme.thShadow),
         pad(14.0),
         gap(8.0)
     ];
     ElCol(applyStyles(listAppend(baseMods, mods)), children)
 }
-
-pub def plaqueCard(theme: Theme, mods: List StyleMod, children: List (Element msg)): Element msg =
-    card(theme, listAppend([doubleBorder(true)], mods), children)
 
 pub def row(mods: List StyleMod, children: List (Element msg)): Element msg =
     ElRow(applyStyles(mods), children)
@@ -538,9 +533,9 @@ pub def button(theme: Theme, btnKey: String, labelTxt: String, mOnClick: Option 
     let disabled = match mOnClick { None -> true, Some(_) -> false };
     let baseFill = if (disabled) withAlpha(theme.thSurfaceTop, 0.45) else theme.thPrimary;
     let hovFill = if (disabled) baseFill else theme.thPrimaryHover;
-    let fg = if (disabled) theme.thMuted else hexColor("#faf6ee");
-    let norm = applyStyles([padXY(14.0, 8.0), hFixed(34.0), bg(baseFill), border(1.0, withAlpha(theme.thInk, 0.18)), rounded(3.5)]);
-    let hov = applyStyles([padXY(14.0, 8.0), hFixed(34.0), bg(hovFill), border(1.0, theme.thAccent), rounded(3.5)]);
+    let fg = if (disabled) theme.thMuted else theme.thPrimaryText;
+    let norm = applyStyles([padXY(14.0, 8.0), hFixed(34.0), bg(baseFill), border(1.0, withAlpha(theme.thInk, 0.14)), rounded(5.0)]);
+    let hov = applyStyles([padXY(14.0, 8.0), hFixed(34.0), bg(hovFill), border(1.0, theme.thAccent), rounded(5.0)]);
     ElButton(btnKey, norm, hov, fontSans(13.0, 600), fg, labelTxt, mOnClick)
 }
 
@@ -670,6 +665,7 @@ pub data PlacedWheel msg {
 
 pub data UiFrameCtx {
     MkUiFrameCtx {
+        ufTheme: Theme,
         ufViewport: Rect,
         ufPointer: Vec2,
         ufPointerDown: Bool,
@@ -988,8 +984,7 @@ def emitBoxBackground(dl: DrawList, st: BoxStyle, r: Rect): Void =
             dl, r, st.bsRadius,
             st.bsFillTop, if (st.bsFillBot != 0) st.bsFillBot else st.bsFillTop,
             st.bsBorderCol, st.bsBorderW,
-            st.bsShadowCol, st.bsShadowY, st.bsShadowBlur,
-            st.bsDoubleBorder
+            st.bsShadowCol, st.bsShadowY, st.bsShadowBlur
         )
     } else ()
 
@@ -1071,7 +1066,7 @@ def emitElement(
     ElProgressBar(st, ratio, trail, c1, c2, tc, trk, lbl) -> {
         drawProgressBar(dl, bounds, st.bsRadius, ratio, trail, c1, c2, tc, trk);
         if (strLen(lbl) > 0) {
-            let lCol = if (ratio > 0.88) hexColor("#faf6ee") else hexColor("#2c251d");
+            let lCol = if (ratio > 0.88) ctx.ufTheme.thPrimaryText else ctx.ufTheme.thInk;
             drawText(dl, bounds.rx + bounds.rw - 5.0, bounds.ry + bounds.rh * 0.5 + 3.5, fontSans(9.5, 600), AlignRight, lCol, lbl)
         } else ()
     },
@@ -1445,8 +1440,8 @@ def emitElement(
             let trackX = inner.rx + inner.rw - 4.0;
             let thumbH = maxFloat(22.0, inner.rh * (inner.rh / maxFloat(1.0, contentH)));
             let thumbY = inner.ry + (inner.rh - thumbH) * (clampedScroll / maxScroll);
-            drawFillRect(dl, rect(trackX, inner.ry, 3.5, inner.rh), 1.75, rgba(130, 118, 98, 45));
-            drawFillRect(dl, rect(trackX, thumbY, 3.5, thumbH), 1.75, rgba(110, 98, 80, 155))
+            drawFillRect(dl, rect(trackX, inner.ry, 3.5, inner.rh), 1.75, ctx.ufTheme.thScrollTrack);
+            drawFillRect(dl, rect(trackX, thumbY, 3.5, thumbH), 1.75, ctx.ufTheme.thScrollThumb)
         } else ();
         popClip(dl)
     },

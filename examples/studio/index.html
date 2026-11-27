@@ -1,13 +1,13 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <link rel="icon" href="data:," />
-  <title>Crema — Pure Geisha UI & 2D Stage</title>
+  <title>Crema Studio — Pure Geisha UI &amp; 2D Stage</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { width: 100%; height: 100%; overflow: hidden; background: #f7f3e9; user-select: none; -webkit-user-select: none; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #f8fafc; user-select: none; -webkit-user-select: none; }
     #crema-canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
     #crema-ime {
       position: fixed; left: -9999px; top: 0; width: 1px; height: 1px;
@@ -18,10 +18,10 @@
 </head>
 <body>
   <canvas id="crema-canvas"></canvas>
-  <input id="crema-ime" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-label="输入" />
+  <input id="crema-ime" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-label="Input" />
   <script type="module">
     import { mountCremaApp } from "/host/web/crema.js";
-    mountCremaApp({ wasmUrl: "/build/dojo.wasm" });
+    mountCremaApp({ wasmUrl: "/build/studio.wasm" });
   </script>
 </body>
 </html>

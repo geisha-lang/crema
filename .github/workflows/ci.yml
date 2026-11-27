@@ -51,13 +51,13 @@ jobs:
       - name: Add Geisha to PATH
         run: echo "$HOME/.geisha/bin" >> "$GITHUB_PATH"
 
-      - name: Typecheck, docs, headless unit suite & Wasm32 Dojo build
+      - name: Typecheck, docs, headless unit suite & Wasm32 Studio build
         run: |
           geisha check
           geisha doc crema.ui >/dev/null
           geisha test
           make wasm
-          test -s build/dojo.wasm
+          test -s build/studio.wasm
 
   macos-native:
     name: Test & Native Smoke (darwin-arm64)
