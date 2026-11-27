@@ -1,44 +1,44 @@
-name = "kagura"
-version = "0.1.0"
+name = "crema"
+version = "0.1.1"
 src_dir = "src"
 tests = ["tests/spec.gsa"]
 
 [target.wasm32]
 exports = [
-  "kagura_init",
-  "kagura_step_frame",
-  "kagura_pointer_move",
-  "kagura_pointer_click",
-  "kagura_pointer_drag",
-  "kagura_scroll_wheel",
-  "kagura_text_input",
-  "kagura_text_submit",
-  "kagura_blur_input",
-  "kagura_key_down",
-  "kagura_on_net_open",
-  "kagura_on_net_message",
-  "kagura_on_net_close",
+  "crema_init",
+  "crema_step_frame",
+  "crema_pointer_move",
+  "crema_pointer_click",
+  "crema_pointer_drag",
+  "crema_scroll_wheel",
+  "crema_text_input",
+  "crema_text_submit",
+  "crema_blur_input",
+  "crema_key_down",
+  "crema_on_net_open",
+  "crema_on_net_message",
+  "crema_on_net_close",
 ]
-web_assets = ["host/web/kagura.js"]
+web_assets = ["host/web/crema.js"]
 
 [target.native]
-c_sources = ["host/native/kagura_macos.m"]
+c_sources = ["host/native/crema_macos.m"]
 c_flags = ["-fobjc-arc"]
 link_flags = ["-framework", "Cocoa", "-framework", "QuartzCore", "-pthread"]
 owns_main = true
-boot_symbol = "__geisha_kagura_boot"
+boot_symbol = "__geisha_crema_boot"
 exports = [
-  "kagura_init",
-  "kagura_step_frame",
-  "kagura_pointer_move",
-  "kagura_pointer_click",
-  "kagura_pointer_drag",
-  "kagura_scroll_wheel",
-  "kagura_text_input",
-  "kagura_text_submit",
-  "kagura_blur_input",
-  "kagura_key_down",
-  "kagura_on_net_open",
-  "kagura_on_net_message",
-  "kagura_on_net_close",
+  "crema_init",
+  "crema_step_frame",
+  "crema_pointer_move",
+  "crema_pointer_click",
+  "crema_pointer_drag",
+  "crema_scroll_wheel",
+  "crema_text_input",
+  "crema_text_submit",
+  "crema_blur_input",
+  "crema_key_down",
+  "crema_on_net_open",
+  "crema_on_net_message",
+  "crema_on_net_close",
 ]

@@ -4,12 +4,12 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <link rel="icon" href="data:," />
-  <title>Kagura (神楽) — Pure Geisha UI & 2D Stage</title>
+  <title>Crema — Pure Geisha UI & 2D Stage</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { width: 100%; height: 100%; overflow: hidden; background: #f7f3e9; user-select: none; -webkit-user-select: none; }
-    #kagura-canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
-    #kagura-ime {
+    #crema-canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
+    #crema-ime {
       position: fixed; left: -9999px; top: 0; width: 1px; height: 1px;
       opacity: 0; border: 0; outline: 0; background: transparent; color: transparent;
       caret-color: transparent; font-size: 16px; pointer-events: none; z-index: 10;
@@ -17,11 +17,11 @@
   </style>
 </head>
 <body>
-  <canvas id="kagura-canvas"></canvas>
-  <input id="kagura-ime" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-label="输入" />
+  <canvas id="crema-canvas"></canvas>
+  <input id="crema-ime" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-label="输入" />
   <script type="module">
-    import { mountKaguraApp } from "/host/web/kagura.js";
-    mountKaguraApp({ wasmUrl: "/build/dojo.wasm" });
+    import { mountCremaApp } from "/host/web/crema.js";
+    mountCremaApp({ wasmUrl: "/build/dojo.wasm" });
   </script>
 </body>
 </html>

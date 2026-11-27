@@ -1,30 +1,30 @@
-// Kagura Host FFI Bindings (`kagura.host`):
-// Connects `kagura.app.Runtime` to WebAssembly (`host/web/kagura.js`) or Native (`host/native/kagura_macos.m`) hosts.
+// Crema Host FFI Bindings (`crema.host`):
+// Connects `crema.app.Runtime` to WebAssembly (`host/web/crema.js`) or Native (`host/native/crema_macos.m`) hosts.
 
-use kagura.app.{HostBridge, MkHostBridge}
+use crema.app.{HostBridge, MkHostBridge}
 
-pub extern "kagura_host_present" def kaguraHostPresent(
+pub extern "crema_host_present" def cremaHostPresent(
     words: MutArray Int64,
     wordCount: Int,
     strs: MutArray String,
     strCount: Int
 ): Void
 
-pub extern "kagura_host_set_cursor" def kaguraHostSetCursor(cursor: String): Void
-pub extern "kagura_host_focus_ime" def kaguraHostFocusIme(inputId: String, value: String, x: Float, y: Float, w: Float, h: Float): Void
-pub extern "kagura_host_blur_ime" def kaguraHostBlurIme(): Void
-pub extern "kagura_host_play_sfx" def kaguraHostPlaySfx(sfxId: String): Void
-pub extern "kagura_host_save_local" def kaguraHostSaveLocal(key: String, val: String): Void
-pub extern "kagura_host_send_net" def kaguraHostSendNet(payload: String): Void
-pub extern "kagura_host_connect_net" def kaguraHostConnectNet(urlOrMode: String, user: String, token: String): Void
+pub extern "crema_host_set_cursor" def cremaHostSetCursor(cursor: String): Void
+pub extern "crema_host_focus_ime" def cremaHostFocusIme(inputId: String, value: String, x: Float, y: Float, w: Float, h: Float): Void
+pub extern "crema_host_blur_ime" def cremaHostBlurIme(): Void
+pub extern "crema_host_play_sfx" def cremaHostPlaySfx(sfxId: String): Void
+pub extern "crema_host_save_local" def cremaHostSaveLocal(key: String, val: String): Void
+pub extern "crema_host_send_net" def cremaHostSendNet(payload: String): Void
+pub extern "crema_host_connect_net" def cremaHostConnectNet(urlOrMode: String, user: String, token: String): Void
 
 pub def envHost(): HostBridge = MkHostBridge {
-    hbPresent: (w, wc, s, sc) -> kaguraHostPresent(w, wc, s, sc),
-    hbSetCursor: (c) -> kaguraHostSetCursor(c),
-    hbFocusIme: (id, v, x, y, w, h) -> kaguraHostFocusIme(id, v, x, y, w, h),
-    hbBlurIme: () -> kaguraHostBlurIme(),
-    hbPlaySfx: (s) -> kaguraHostPlaySfx(s),
-    hbSaveLocal: (k, v) -> kaguraHostSaveLocal(k, v),
-    hbSendNet: (p) -> kaguraHostSendNet(p),
-    hbConnectNet: (m, u, t) -> kaguraHostConnectNet(m, u, t),
+    hbPresent: (w, wc, s, sc) -> cremaHostPresent(w, wc, s, sc),
+    hbSetCursor: (c) -> cremaHostSetCursor(c),
+    hbFocusIme: (id, v, x, y, w, h) -> cremaHostFocusIme(id, v, x, y, w, h),
+    hbBlurIme: () -> cremaHostBlurIme(),
+    hbPlaySfx: (s) -> cremaHostPlaySfx(s),
+    hbSaveLocal: (k, v) -> cremaHostSaveLocal(k, v),
+    hbSendNet: (p) -> cremaHostSendNet(p),
+    hbConnectNet: (m, u, t) -> cremaHostConnectNet(m, u, t),
 }

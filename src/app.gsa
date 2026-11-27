@@ -1,4 +1,4 @@
-// Kagura Layer 3 (`kagura.app`):
+// Crema Layer 3 (`crema.app`):
 // TEA (The Elm Architecture) pure state runtime (`AppConfig model msg`),
 // `Functor Cmd`, pluggable `HostBridge` (headless or native/web FFI),
 // automatic scroll/hover/focus/IME management, and dirty-driven / 60fps host loop.
@@ -7,12 +7,12 @@ use std.option.{Option, Some, None}
 use std.list.{listAppend, listMap}
 use std.map.{StrMap, strMapNew, strMapGet, strMapInsert}
 use std.control.{Functor, fmap}
-use kagura.gfx.{
+use crema.gfx.{
     Vec2, vec2, Rect, rect, colorR, minFloat, maxFloat, clampFloat,
     DrawList, drawListWithCap, dlClear, dlWordCount, dlStrCount,
     dlRawWords, dlRawStrs, drawClearBg, emitImeClear
 }
-use kagura.ui.{
+use crema.ui.{
     Theme, Element, scrollPinnedSentinel,
     UiHitAction, ActClick, ActFocusInput, ActSwallow,
     PlacedHitbox, PlacedScroll, PlacedDrag, PlacedWheel, UiFrameCtx, MkUiFrameCtx,
@@ -20,7 +20,7 @@ use kagura.ui.{
 }
 
 // ============================================================================
-// 1. Pluggable Cross-Platform `HostBridge` (Zero-FFI `headlessHost` + `kagura.host.envHost`)
+// 1. Pluggable Cross-Platform `HostBridge` (Zero-FFI `headlessHost` + `crema.host.envHost`)
 // ============================================================================
 
 pub data HostBridge {

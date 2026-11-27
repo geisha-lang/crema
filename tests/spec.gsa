@@ -1,4 +1,4 @@
-// Kagura Headless Verification Suite (`tests/spec.gsa`):
+// Crema Headless Verification Suite (`tests/spec.gsa`):
 // Tests binary `DrawList` word encoding, RGBA & CJK typography metrics, Flexbox `Fixed`/`Grow` layout,
 // `ScrollView` viewport hitbox clipping, `Functor` message mapping, `Camera2D` inverse projection,
 // Hit-Stop time dilation, 2-Bone Analytic IK precision (< 1e-5), and dirty-driven TEA `Runtime`.
@@ -12,7 +12,7 @@ use std.control.fmap
 use sys.io.eprintLn
 use sys.proc.exit
 
-use kagura.gfx.{
+use crema.gfx.{
     Vec2, vec2, vDist, Rect, rect,
     rgba, colorR, colorG, colorB, colorA, hexColor, lerpColor,
     fontSans, measureTextWidth, wrapTextLines,
@@ -21,21 +21,21 @@ use kagura.gfx.{
     drawListNew, dlClear, dlWordCount, dlStrCount, dlCmdCount, dlWordAt, dlFloatAt, dlStrAt,
     drawClearBg, drawRect, drawPolygon, drawText, AlignCenter, absFloat
 }
-use kagura.ui.{
+use crema.ui.{
     themeXuanPaper,
     wFixed, hFixed, wGrow, hGrow, fillSpace, pad, gap,
     Element, row, wrapRow, col, scrollView, scrollViewSticky, paragraph, button,
     UiHitAction, ActClick, UiFrameCtx, MkUiFrameCtx,
     measureElement, renderUiRoot, hitTestUi
 }
-use kagura.stage.{
+use crema.stage.{
     cameraNew, cameraPan, cameraZoomBy, worldToScreen, screenToWorld,
     EaseLinear, EaseOutQuad, kf, sampleFloatTrack,
     hitStop, visualTimeWithHitStops,
     solveTwoBoneIk, sampleCatmullRom,
     MkBurstConfig, spawnBurst2D, stepParticles2D
 }
-use kagura.app.{
+use crema.app.{
     Cmd, CmdNone, CmdEmit, cmdBatch, headlessHost,
     basicUiApp, runtimeCreate, rtModel, rtStepFrame, rtPointerClick
 }
@@ -78,7 +78,7 @@ def testGfxLayer(): Result Void String = {
 
     dlClear(dl);
     assertTrue("dlClear resets counts", dlWordCount(dl) == 0 && dlStrCount(dl) == 0 && dlCmdCount(dl) == 0)?;
-    printLn("  [PASS] kagura.gfx: RGBA algebra, CJK wrapping & 8-byte binary DrawList");
+    printLn("  [PASS] crema.gfx: RGBA algebra, CJK wrapping & 8-byte binary DrawList");
     Ok(())
 }
 
@@ -155,7 +155,7 @@ def testUiLayoutAndFunctor(): Result Void String = {
     ]);
     let (_, wrapH) = measureElement(wrappedChips, 180.0, 400.0);
     assertTrue("wrapRow wraps 3 wide chips across >= 2 lines", wrapH > 68.0)?;
-    printLn("  [PASS] kagura.ui: Flexbox Grow/Fixed/WrapRow layout, ScrollView hitbox clipping & Functor.fmap");
+    printLn("  [PASS] crema.ui: Flexbox Grow/Fixed/WrapRow layout, ScrollView hitbox clipping & Functor.fmap");
     Ok(())
 }
 
@@ -197,7 +197,7 @@ def testStageLayer(): Result Void String = {
     assertTrue("spawnBurst2D count == 16", listLen(burst) == 16)?;
     let decayed = stepParticles2D(stepParticles2D(stepParticles2D(stepParticles2D(stepParticles2D(stepParticles2D(burst, 0.1), 0.1), 0.1), 0.1), 0.1), 0.1);
     assertTrue("particles expire cleanly after lifetime", listLen(decayed) == 0)?;
-    printLn("  [PASS] kagura.stage: Camera2D inverse, Hit-Stop clock, 2-Bone IK (< 1e-5) & particles");
+    printLn("  [PASS] crema.stage: Camera2D inverse, Hit-Stop clock, 2-Bone IK (< 1e-5) & particles");
     Ok(())
 }
 
@@ -237,24 +237,24 @@ def testDirtyDrivenAppRuntime(): Result Void String = {
     let rendered4 = rtStepFrame(rt, 16.6, 640.0, 480.0);
     assertTrue("Frame 4 returns to idle zero-redraw state", !rendered4)?;
 
-    printLn("  [PASS] kagura.app: dirty-driven zero-idle TEA loop, hit-dispatch & CmdBatch");
+    printLn("  [PASS] crema.app: dirty-driven zero-idle TEA loop, hit-dispatch & CmdBatch");
     Ok(())
 }
 
 def runAll(): Result Void String = {
-    printLn("Running Kagura framework verification suite...");
+    printLn("Running Crema framework verification suite...");
     testGfxLayer()?;
     testUiLayoutAndFunctor()?;
     testStageLayer()?;
     testDirtyDrivenAppRuntime()?;
-    printLn("All Kagura framework unit & layout suites passed!");
+    printLn("All Crema framework unit & layout suites passed!");
     Ok(())
 }
 
 def main(): Void = match runAll() {
     Ok(_) -> (),
     Err(msg) -> {
-        eprintLn("✗ KAGURA TEST FAILED: " + msg);
+        eprintLn("✗ CREMA TEST FAILED: " + msg);
         exit(1)
     },
 }

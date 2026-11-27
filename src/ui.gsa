@@ -1,4 +1,4 @@
-// Kagura Layer 1 (`kagura.ui`):
+// Crema Layer 1 (`crema.ui`):
 // Clay-inspired declarative Flexbox / ZStack / ScrollView layout engine,
 // `Functor Element` component composition, CJK paragraph wrapping, and automatic hitbox/IME collection.
 
@@ -7,7 +7,7 @@ use std.list.{listLen, listRev, listAppend, listMap}
 use std.vec.{Vec, vecNew, vecPush, vecToList}
 use std.map.{StrMap, strMapGet}
 use std.control.{Functor, fmap}
-use kagura.gfx.{
+use crema.gfx.{
     Vec2, vec2, Rect, MkRect, rect, rectContains, rectIntersect,
     Color, rgba, rgb, hexColor, withAlpha,
     FontFamily, FontSans, FontSerif,
@@ -17,7 +17,7 @@ use kagura.gfx.{
     DrawList, drawCard, drawRect, drawFillRect, drawProgressBar,
     drawText, drawImage, pushClip, popClip, emitImeInput
 }
-use kagura.gfx.{minFloat, maxFloat, clampFloat, clamp01}
+use crema.gfx.{minFloat, maxFloat, clampFloat, clamp01}
 
 // ============================================================================
 // 1. Sizing, Alignment, Theme & Composable `StyleMod` Modifiers

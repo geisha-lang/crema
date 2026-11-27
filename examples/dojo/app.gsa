@@ -1,21 +1,21 @@
-// Kagura Interactive Studio & 2D Martial Dojo Showcase (`examples/dojo/app.gsa`).
+// Crema Interactive Studio & 2D Martial Dojo Showcase (`examples/dojo/app.gsa`).
 //
 // Compiles unchanged to BOTH:
-//   1. `wasm32` WebAssembly (`build/dojo.wasm` + `host/web/kagura.js`)
-//   2. `arm64-apple-macosx14.0` Native Cocoa/Quartz2D App (`build/kagura-dojo`)
+//   1. `wasm32` WebAssembly (`build/dojo.wasm` + `host/web/crema.js`)
+//   2. `arm64-apple-macosx14.0` Native Cocoa/Quartz2D App (`build/crema-dojo`)
 
 use std.option.{Option, Some, None}
 use std.list.{listLen, listAppend, listMap, listRev}
 use std.str.intToStr
 use std.control.fmap
-use kagura.gfx.{
+use crema.gfx.{
     Vec2, vec2, vAdd, vSub, vScale, vNorm, Rect, rect,
     Color, rgba, hexColor, withAlpha,
     fontSans, fontSerif, fontMono,
     sin, cos, atan2, radToDeg, clampFloat, clamp01, roundInt,
     DrawList, drawCard, drawCircle, drawEllipse, drawLine, drawPolygon, drawRibbon, drawText, AlignCenter, AlignRight
 }
-use kagura.ui.{
+use crema.ui.{
     Theme, themeXuanPaper, themeInkDark,
     AlignMid, AlignStretch,
     wFixed, hFixed, wGrow, hGrow, fillSpace, pad, padXY, gap, alignY, bg, border, rounded, clipped,
@@ -24,7 +24,7 @@ use kagura.ui.{
     label, heading, mutedText, paragraph, badge, progressBar,
     button, outlineButton, textInput, canvasStage
 }
-use kagura.stage.{
+use crema.stage.{
     Camera2D, cameraNew, cameraStep, cameraZoomBy, cameraAddTrauma,
     worldToScreen, screenToWorld, withCameraTransform,
     EaseOutQuad, EaseInOutCubic, kf, sampleFloatTrack,
@@ -32,13 +32,13 @@ use kagura.stage.{
     solveTwoBoneIk, sampleCatmullRom, buildTaperedPolygon,
     Particle2D, MkBurstConfig, spawnBurst2D, stepParticles2D, drawParticles2D
 }
-use kagura.app.{
+use crema.app.{
     Cmd, CmdNone, CmdPlaySfx, cmdNone,
     AppConfig, MkAppConfig, Runtime,
     runtimeCreate, rtStepFrame, rtPointerMove, rtPointerClick,
     rtScrollWheel, rtTextInput, rtTextSubmit, rtBlurInput, rtKeyDown
 }
-use kagura.host.envHost
+use crema.host.envHost
 
 // ============================================================================
 // 1. Isolated Reusable Sub-Component (`StatCounter`) Composed via `Functor.fmap`
@@ -478,7 +478,7 @@ def viewDojo(_vp: Rect, st: DojoModel): Element DojoMsg = {
         // Top Header Plaque
         plaqueCard(th, [wGrow(1.0), padXY(18.0, 12.0)], [
             row([wGrow(1.0), alignY(AlignMid), gap(12.0)], [
-                badge("神楽 KAGURA", hexColor("#faf6ee"), hexColor("#9e2a22"), hexColor("#7a1f18")),
+                badge("CREMA", hexColor("#faf6ee"), hexColor("#9e2a22"), hexColor("#7a1f18")),
                 heading(th, 20.0, "Geisha 声明式 UI 与 2D 舞台渲染框架"),
                 mutedText(th, 12.5, "Binary DrawList · Clay Flexbox · Functor Component · 2-Bone IK"),
                 growSpacer(),
@@ -585,47 +585,47 @@ def globalRuntime: Cell (Option (Runtime DojoModel DojoMsg)) = cellNew(None)
 
 def main(): Void = ()
 
-pub def kagura_init(w: Float, h: Float): Void = {
+pub def crema_init(w: Float, h: Float): Void = {
     let rt = runtimeCreate(dojoAppConfig(false), w, h, envHost());
     cellSet(globalRuntime, Some(rt))
 }
 
-pub def kagura_step_frame(dtMs: Float, w: Float, h: Float): Bool = match cellGet(globalRuntime) {
+pub def crema_step_frame(dtMs: Float, w: Float, h: Float): Bool = match cellGet(globalRuntime) {
     None -> false,
     Some(rt) -> rtStepFrame(rt, dtMs, w, h),
 }
 
-pub def kagura_pointer_move(x: Float, y: Float): Void = match cellGet(globalRuntime) {
+pub def crema_pointer_move(x: Float, y: Float): Void = match cellGet(globalRuntime) {
     None -> (),
     Some(rt) -> rtPointerMove(rt, x, y),
 }
 
-pub def kagura_pointer_click(x: Float, y: Float): Void = match cellGet(globalRuntime) {
+pub def crema_pointer_click(x: Float, y: Float): Void = match cellGet(globalRuntime) {
     None -> (),
     Some(rt) -> rtPointerClick(rt, x, y),
 }
 
-pub def kagura_scroll_wheel(x: Float, y: Float, dy: Float): Void = match cellGet(globalRuntime) {
+pub def crema_scroll_wheel(x: Float, y: Float, dy: Float): Void = match cellGet(globalRuntime) {
     None -> (),
     Some(rt) -> rtScrollWheel(rt, x, y, dy),
 }
 
-pub def kagura_text_input(inpId: String, val: String): Void = match cellGet(globalRuntime) {
+pub def crema_text_input(inpId: String, val: String): Void = match cellGet(globalRuntime) {
     None -> (),
     Some(rt) -> rtTextInput(rt, inpId, val),
 }
 
-pub def kagura_text_submit(inpId: String): Void = match cellGet(globalRuntime) {
+pub def crema_text_submit(inpId: String): Void = match cellGet(globalRuntime) {
     None -> (),
     Some(rt) -> rtTextSubmit(rt, inpId),
 }
 
-pub def kagura_blur_input(): Void = match cellGet(globalRuntime) {
+pub def crema_blur_input(): Void = match cellGet(globalRuntime) {
     None -> (),
     Some(rt) -> rtBlurInput(rt),
 }
 
-pub def kagura_key_down(key: String): Void = match cellGet(globalRuntime) {
+pub def crema_key_down(key: String): Void = match cellGet(globalRuntime) {
     None -> (),
     Some(rt) -> rtKeyDown(rt, key),
 }

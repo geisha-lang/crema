@@ -1,4 +1,4 @@
-// Kagura Layer 0 (`kagura.gfx`):
+// Crema Layer 0 (`crema.gfx`):
 // 8-byte word-aligned binary `DrawList`, RGBA color algebra, CJK-aware typography metrics,
 // and portable 2D geometry primitives shared across `wasm32` (Web) and `native` (macOS/C) hosts.
 

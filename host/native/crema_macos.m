@@ -1,6 +1,6 @@
-// Kagura Native macOS Cocoa + CoreGraphics Quartz 2D Host (`host/native/kagura_macos.m`)
+// Crema Native macOS Cocoa + CoreGraphics Quartz 2D Host (`host/native/crema_macos.m`)
 //
-// Executes the exact same 8-byte word-aligned binary `DrawList` produced by `kagura.gfx`
+// Executes the exact same 8-byte word-aligned binary `DrawList` produced by `crema.gfx`
 // in a Retina `NSWindow` using CoreGraphics (`CGContextRef`) & CoreText (`NSAttributedString`),
 // allowing identical `.gsa` applications to compile to both WebAssembly and native macOS apps.
 
@@ -10,17 +10,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Geisha runtime & exported Kagura entry points (note trailing `void *fv` closure param!)
+// Geisha runtime & exported Crema entry points (note trailing `void *fv` closure param!)
 extern void gc_init_with_stack(int64_t heap_words, void *stack_anchor);
 extern void gc_enable_generational(void);
 extern void *gc_alloc_atomic(int64_t bytes);
-extern void __geisha_kagura_boot(void);
-extern void kagura_init(double w, double h, void *fv);
-extern uint8_t kagura_step_frame(double dt_ms, double w, double h, void *fv);
-extern void kagura_pointer_move(double x, double y, void *fv);
-extern void kagura_pointer_click(double x, double y, void *fv);
-extern void kagura_scroll_wheel(double x, double y, double dy, void *fv);
-extern void kagura_key_down(const char *key, void *fv);
+extern void __geisha_crema_boot(void);
+extern void crema_init(double w, double h, void *fv);
+extern uint8_t crema_step_frame(double dt_ms, double w, double h, void *fv);
+extern void crema_pointer_move(double x, double y, void *fv);
+extern void crema_pointer_click(double x, double y, void *fv);
+extern void crema_scroll_wheel(double x, double y, double dy, void *fv);
+extern void crema_key_down(const char *key, void *fv);
 
 static const char *gs_dup_cstr(const char *src) {
     if (!src) src = "";
@@ -48,7 +48,7 @@ static NSMutableArray<NSString *> *g_strs = nil;
 static int32_t  g_present_calls = 0;
 static NSView  *g_active_view = nil;
 
-void kagura_host_present(const void *words_arr, int32_t word_count, const void *strs_arr, int32_t str_count) {
+void crema_host_present(const void *words_arr, int32_t word_count, const void *strs_arr, int32_t str_count) {
     g_present_calls++;
     const int64_t *src_words = (const int64_t *)((const char *)words_arr + 8);
     const char * const *src_strs = (const char * const *)((const char *)strs_arr + 8);
@@ -73,31 +73,31 @@ void kagura_host_present(const void *words_arr, int32_t word_count, const void *
     }
 }
 
-void kagura_host_set_cursor(const char *cursor) {
+void crema_host_set_cursor(const char *cursor) {
     if (!g_active_view || !cursor) return;
     if (strcmp(cursor, "pointer") == 0) [[NSCursor pointingHandCursor] set];
     else if (strcmp(cursor, "text") == 0) [[NSCursor IBeamCursor] set];
     else [[NSCursor arrowCursor] set];
 }
 
-void kagura_host_focus_ime(const char *inp_id, const char *val, double x, double y, double w, double h) {
+void crema_host_focus_ime(const char *inp_id, const char *val, double x, double y, double w, double h) {
     (void)inp_id; (void)val; (void)x; (void)y; (void)w; (void)h;
 }
 
-void kagura_host_blur_ime(void) {}
+void crema_host_blur_ime(void) {}
 
-void kagura_host_play_sfx(const char *sfx_id) {
+void crema_host_play_sfx(const char *sfx_id) {
     if (sfx_id && strcmp(sfx_id, "parry") == 0) NSBeep();
 }
 
-void kagura_host_save_local(const char *key, const char *val) {
+void crema_host_save_local(const char *key, const char *val) {
     if (!key || !val) return;
     [[NSUserDefaults standardUserDefaults] setObject:[NSString stringWithUTF8String:val]
                                               forKey:[NSString stringWithUTF8String:key]];
 }
 
-void kagura_host_send_net(const char *payload) { (void)payload; }
-void kagura_host_connect_net(const char *mode, const char *user, const char *token) {
+void crema_host_send_net(const char *payload) { (void)payload; }
+void crema_host_connect_net(const char *mode, const char *user, const char *token) {
     (void)mode; (void)user; (void)token;
 }
 
@@ -113,10 +113,10 @@ static void cg_add_round_rect(CGContextRef cg, CGRect r, CGFloat rad) {
     }
 }
 
-@interface KaguraCanvasView : NSView
+@interface CremaCanvasView : NSView
 @end
 
-@implementation KaguraCanvasView
+@implementation CremaCanvasView
 
 - (BOOL)isFlipped { return YES; }
 - (BOOL)acceptsFirstResponder { return YES; }
@@ -138,24 +138,24 @@ static void cg_add_round_rect(CGContextRef cg, CGRect r, CGFloat rad) {
 
 - (void)mouseMoved:(NSEvent *)ev {
     NSPoint p = [self localPt:ev];
-    kagura_pointer_move(p.x, p.y, NULL);
+    crema_pointer_move(p.x, p.y, NULL);
 }
 
 - (void)mouseDown:(NSEvent *)ev {
     NSPoint p = [self localPt:ev];
-    kagura_pointer_click(p.x, p.y, NULL);
+    crema_pointer_click(p.x, p.y, NULL);
 }
 
 - (void)scrollWheel:(NSEvent *)ev {
     NSPoint p = [self localPt:ev];
     double dy = ev.hasPreciseScrollingDeltas ? -ev.scrollingDeltaY : -ev.scrollingDeltaY * 12.0;
-    kagura_scroll_wheel(p.x, p.y, dy, NULL);
+    crema_scroll_wheel(p.x, p.y, dy, NULL);
 }
 
 - (void)keyDown:(NSEvent *)ev {
     NSString *chars = ev.charactersIgnoringModifiers;
     if (chars.length > 0) {
-        kagura_key_down(gs_dup_cstr(chars.UTF8String), NULL);
+        crema_key_down(gs_dup_cstr(chars.UTF8String), NULL);
     }
 }
 
@@ -460,22 +460,22 @@ int main(int argc, const char *argv[]) {
     uint64_t stack_anchor = 0;
     gc_init_with_stack(131072, &stack_anchor);
     gc_enable_generational();
-    __geisha_kagura_boot();
+    __geisha_crema_boot();
 
     // Headless smoke-check mode for automated CI verification
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--headless-smoke") == 0) {
             @autoreleasepool {
-                kagura_init(1280.0, 800.0, NULL);
-                kagura_step_frame(16.6, 1280.0, 800.0, NULL);
-                kagura_pointer_move(200.0, 180.0, NULL);
-                kagura_pointer_click(200.0, 180.0, NULL);
-                kagura_step_frame(16.6, 1280.0, 800.0, NULL);
+                crema_init(1280.0, 800.0, NULL);
+                crema_step_frame(16.6, 1280.0, 800.0, NULL);
+                crema_pointer_move(200.0, 180.0, NULL);
+                crema_pointer_click(200.0, 180.0, NULL);
+                crema_step_frame(16.6, 1280.0, 800.0, NULL);
                 if (g_present_calls < 2 || g_word_len <= 10) {
                     fprintf(stderr, "Headless smoke check failed: presents=%d words=%d\n", g_present_calls, g_word_len);
                     return 1;
                 }
-                printf("✓ Kagura native macOS Cocoa/Quartz2D host smoke passed (presents=%d, words=%d, strs=%lu)\n",
+                printf("✓ Crema native macOS Cocoa/Quartz2D host smoke passed (presents=%d, words=%d, strs=%lu)\n",
                        g_present_calls, g_word_len, (unsigned long)g_strs.count);
                 return 0;
             }
@@ -492,16 +492,16 @@ int main(int argc, const char *argv[]) {
                       styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
                         backing:NSBackingStoreBuffered
                           defer:NO];
-        [win setTitle:@"Kagura (神楽) — Pure Geisha Native UI & 2D Stage"];
+        [win setTitle:@"Crema — Pure Geisha Native UI & 2D Stage"];
         [win center];
 
-        KaguraCanvasView *view = [[KaguraCanvasView alloc] initWithFrame:initRect];
+        CremaCanvasView *view = [[CremaCanvasView alloc] initWithFrame:initRect];
         [view setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
         win.contentView = view;
         g_active_view = view;
 
-        kagura_init(1280.0, 800.0, NULL);
-        kagura_step_frame(16.6, 1280.0, 800.0, NULL);
+        crema_init(1280.0, 800.0, NULL);
+        crema_step_frame(16.6, 1280.0, 800.0, NULL);
 
         [win makeKeyAndOrderFront:nil];
         [win makeFirstResponder:view];
@@ -515,7 +515,7 @@ int main(int argc, const char *argv[]) {
             double dtMs = fmin(100.0, fmax(1.0, (now - lastTime) * 1000.0));
             lastTime = now;
             NSSize sz = view.bounds.size;
-            kagura_step_frame(dtMs, sz.width, sz.height, NULL);
+            crema_step_frame(dtMs, sz.width, sz.height, NULL);
         }];
 
         [app run];
