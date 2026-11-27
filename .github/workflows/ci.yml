@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  linux-wasm:
+    name: Test & Wasm32 Build (linux-x86_64)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Clang & Wasm32 toolchain
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft*.list /etc/apt/sources.list.d/azure*.list
+          sudo apt-get update
+          sudo apt-get install -y clang lld xz-utils
+
+      - name: Resolve Geisha compiler commit
+        id: geisha-rev
+        run: |
+          SHA="$(git ls-remote https://github.com/geisha-lang/geisha.gsa.git refs/heads/main | awk '{print $1}')"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Geisha toolchain
+        id: cache-geisha
+        uses: actions/cache@v4
+        with:
+          path: ~/.geisha
+          key: geisha-crema-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.geisha-rev.outputs.sha }}
+
+      - name: Build Geisha toolchain (on cache miss)
+        if: steps.cache-geisha.outputs.cache-hit != 'true'
+        run: |
+          SRC="$(mktemp -d)"
+          git clone --depth 1 https://github.com/geisha-lang/geisha.gsa.git "$SRC"
+          make -C "$SRC" runtime wasm-runtime stage1 stage2
+          mkdir -p "$HOME/.geisha/bin" "$HOME/.geisha/lib"
+          cp "$SRC/build/geisha2" "$HOME/.geisha/bin/geisha"
+          cp "$SRC/build/libgeisha_runtime.a" "$HOME/.geisha/lib/libgeisha_runtime.a"
+          cp "$SRC/build/wasm_rt.o" "$HOME/.geisha/lib/wasm_rt.o"
+          rm -rf "$SRC"
+
+      - name: Add Geisha to PATH
+        run: echo "$HOME/.geisha/bin" >> "$GITHUB_PATH"
+
+      - name: Typecheck, docs, headless unit suite & Wasm32 Dojo build
+        run: |
+          geisha check
+          geisha doc crema.ui >/dev/null
+          geisha test
+          make wasm
+          test -s build/dojo.wasm
+
+  macos-native:
+    name: Test & Native Smoke (darwin-arm64)
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install LLVM/Wasm32 toolchain (macOS)
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: |
+          brew list llvm >/dev/null 2>&1 || brew install llvm
+          brew list lld >/dev/null 2>&1 || brew install lld
+          command -v xz >/dev/null 2>&1 || brew install xz
+
+      - name: Resolve Geisha compiler commit
+        id: geisha-rev
+        run: |
+          SHA="$(git ls-remote https://github.com/geisha-lang/geisha.gsa.git refs/heads/main | awk '{print $1}')"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Geisha toolchain
+        id: cache-geisha
+        uses: actions/cache@v4
+        with:
+          path: ~/.geisha
+          key: geisha-crema-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.geisha-rev.outputs.sha }}
+
+      - name: Build Geisha toolchain (on cache miss)
+        if: steps.cache-geisha.outputs.cache-hit != 'true'
+        run: |
+          SRC="$(mktemp -d)"
+          git clone --depth 1 https://github.com/geisha-lang/geisha.gsa.git "$SRC"
+          make -C "$SRC" runtime wasm-runtime stage1 stage2
+          mkdir -p "$HOME/.geisha/bin" "$HOME/.geisha/lib"
+          cp "$SRC/build/geisha2" "$HOME/.geisha/bin/geisha"
+          cp "$SRC/build/libgeisha_runtime.a" "$HOME/.geisha/lib/libgeisha_runtime.a"
+          cp "$SRC/build/wasm_rt.o" "$HOME/.geisha/lib/wasm_rt.o"
+          rm -rf "$SRC"
+
+      - name: Add Geisha & Homebrew LLVM to PATH
+        run: |
+          echo "$HOME/.geisha/bin" >> "$GITHUB_PATH"
+          if [ -d /opt/homebrew/opt/llvm/bin ]; then
+            echo "/opt/homebrew/opt/llvm/bin" >> "$GITHUB_PATH"
+          fi
+          if [ -d /opt/homebrew/opt/lld/bin ]; then
+            echo "/opt/homebrew/opt/lld/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Run full Wasm32 + macOS Cocoa/Quartz2D build & smoke test
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
+        run: |
+          geisha check
+          geisha doc crema.ui >/dev/null
+          make test
