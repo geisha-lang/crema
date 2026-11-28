@@ -194,7 +194,7 @@ export async function mountCremaApp(options = {}) {
     return text.length;
   }
 
-  function renderDrawListArrays(i32, f64, wordCount, getStr) {
+  function renderDrawListArrays(i32, f64, wordCount, getStr, isCachedRepaint = false) {
     let frameIme = null;
     let seenImeId = "";
     ctx.save();
@@ -466,11 +466,13 @@ export async function mountCremaApp(options = {}) {
           const hasDomFocus = !!(imeInput && document.activeElement === imeInput && activeImeId === id);
           let liveVal = val;
           if (hasDomFocus && imeInput.value !== undefined) {
-            if (!isComposing && val !== lastDispatchedImeVal) {
+            if (!isCachedRepaint && !isComposing && val !== lastDispatchedImeVal) {
+              const prevLen = imeInput.value.length;
+              const prevEnd = typeof imeInput.selectionEnd === "number" ? imeInput.selectionEnd : prevLen;
+              const nextPos = prevEnd >= prevLen ? val.length : Math.min(val.length, prevEnd);
               imeInput.value = val;
               lastDispatchedImeVal = val;
-              const clamped = Math.min(val.length, imeInput.selectionEnd || 0);
-              try { imeInput.setSelectionRange(clamped, clamped); } catch (_) {}
+              try { imeInput.setSelectionRange(nextPos, nextPos); } catch (_) {}
             }
             liveVal = imeInput.value;
           }
@@ -597,7 +599,7 @@ export async function mountCremaApp(options = {}) {
       wordCount,
       strs,
     };
-    snapImeId = renderDrawListArrays(i32View, f64View, wordCount, (idx) => (idx >= 0 && idx < strCount ? strs[idx] : ""));
+    snapImeId = renderDrawListArrays(i32View, f64View, wordCount, (idx) => (idx >= 0 && idx < strCount ? strs[idx] : ""), false);
   }
 
   function repaintCachedFrame() {
@@ -607,7 +609,8 @@ export async function mountCremaApp(options = {}) {
       lastDrawSnap.i32,
       lastDrawSnap.f64,
       lastDrawSnap.wordCount,
-      (idx) => (idx >= 0 && idx < lastDrawSnap.strs.length ? lastDrawSnap.strs[idx] : "")
+      (idx) => (idx >= 0 && idx < lastDrawSnap.strs.length ? lastDrawSnap.strs[idx] : ""),
+      true
     );
   }
 

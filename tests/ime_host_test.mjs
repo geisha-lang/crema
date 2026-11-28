@@ -297,4 +297,30 @@ assert.equal(imeInput.selectionStart, 15, "click with scrollX > 0 must account f
 capturedEnv.imports.crema_host_blur_ime();
 assert.equal(globalThis.document.activeElement, null);
 
+// 9. P0 regression: sequential typing 'H','e','l','l','o' after frame render must NOT reverse to "elloH"
+capturedEnv.imports.crema_host_focus_ime(idPtr, strPtr(""), 100, 500, 200, 32, 8);
+emitImeFrame("note-input", "", 8);
+let typed = "";
+for (const ch of ["H", "e", "l", "l", "o"]) {
+  typed += ch;
+  imeInput.value = typed;
+  imeInput.setSelectionRange(typed.length, typed.length);
+  imeInput.dispatchEvent("input"); // triggers repaintCachedFrame() with stale snapshot
+  assert.equal(imeInput.value, typed, `cached repaint must not revert typed value "${typed}"`);
+  emitImeFrame("note-input", typed, 8);
+}
+assert.equal(imeInput.value, "Hello", "sequential typing must produce Hello, not elloH");
+assert.equal(imeInput.selectionStart, 5, "caret must stay at end (5) after sequential typing");
+
+// 10. P0 regression: compositionend("你好") + repaintCachedFrame() must NOT revert to "ni"
+emitImeFrame("note-input", "ni", 8);
+imeInput.dispatchEvent("compositionstart");
+imeInput.value = "ni";
+imeInput.dispatchEvent("compositionupdate");
+imeInput.value = "你好";
+imeInput.setSelectionRange(2, 2);
+imeInput.dispatchEvent("compositionend");
+assert.equal(imeInput.value, "你好", "compositionend must keep 你好 and not revert to stale snapshot ni");
+capturedEnv.imports.crema_host_blur_ime();
+
 console.log("  [PASS] crema.js IME: real padX, initial-focus/composing/model-sync, blink/DPR repaint & clean blur");

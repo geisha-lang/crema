@@ -782,21 +782,75 @@ def filterVisible(xs: List (Element msg)): List (Element msg) = {
     listRev(cellGet(outRev))
 }
 
-def rowShrinkTier(el: Element msg): Int = match el {
-    ElText(_, _, _, _) -> 0,
-    ElParagraph(_, _, _, _) -> 0,
-    ElBox(bst, child) -> {
-        let isFit = match bst.bsWidth { SizeFit -> true, _ -> false };
-        let isLeaf = match child {
-            ElText(_, _, _, _) -> true,
-            ElParagraph(_, _, _, _) -> true,
-            _ -> false,
-        };
-        if (isFit && bst.bsMinW <= 0.0 && bst.bsFillTop == 0 && bst.bsFillBot == 0 && bst.bsBorderW <= 0.0 && isLeaf) 0
-        else 1
-    },
-    _ -> 1,
+def isFixedWidthAxis(sz: AxisSize): Bool = match sz {
+    SizeFixed(_) -> true,
+    SizePercent(_) -> true,
+    _ -> false,
 }
+
+def elementHasFixedWidth(el: Element msg): Bool = match el {
+    ElSpacer(_, _, g) -> g <= 0.0,
+    ElProgressBar(st, _, _, _, _, _, _, _) -> isFixedWidthAxis(st.bsWidth),
+    ElImage(st, _, _) -> isFixedWidthAxis(st.bsWidth),
+    ElButton(_, st, _, _, _, _, _) -> isFixedWidthAxis(st.bsWidth),
+    ElInteractive(_, st, _, _, _, _) -> isFixedWidthAxis(st.bsWidth),
+    ElTextInput(_, st, _, _, _, _, _, _, _, _) -> isFixedWidthAxis(st.bsWidth),
+    ElCanvas(st, _) -> isFixedWidthAxis(st.bsWidth),
+    ElCanvasInteractive(st, _, _, _) -> isFixedWidthAxis(st.bsWidth),
+    ElBox(st, _) -> isFixedWidthAxis(st.bsWidth),
+    ElRow(st, _) -> isFixedWidthAxis(st.bsWidth),
+    ElWrapRow(st, _, _) -> isFixedWidthAxis(st.bsWidth),
+    ElCol(st, _) -> isFixedWidthAxis(st.bsWidth),
+    ElZStack(st, _) -> isFixedWidthAxis(st.bsWidth),
+    ElScroll(_, _, st, _) -> isFixedWidthAxis(st.bsWidth),
+    _ -> false,
+}
+
+def isTransparentFitStyle(st: BoxStyle): Bool = {
+    let isFit = match st.bsWidth { SizeFit -> true, _ -> false };
+    isFit && st.bsMinW <= 0.0 && st.bsFillTop == 0 && st.bsFillBot == 0 && st.bsBorderW <= 0.0
+}
+
+def isSoftTextLeaf(el: Element msg): Bool = match el {
+    ElText(_, _, _, _) -> true,
+    ElParagraph(_, _, _, _) -> true,
+    ElBox(bst, child) -> isTransparentFitStyle(bst) && match child {
+        ElText(_, _, _, _) -> true,
+        ElParagraph(_, _, _, _) -> true,
+        _ -> false,
+    },
+    _ -> false,
+}
+
+// 3-tier shrink priority for `ElRow` non-grow children:
+// 0 = soft text/paragraph (or transparent `SizeFit` `ElBox`/`ElCol` containing only tier-0 items)
+// 1 = protected adaptive controls (`SizeFit` buttons, badges with bg/border/minW, mixed `ElCol`, etc.)
+// 2 = rigid fixed/percent items (`SizeFixed`, `SizePercent`, `ElSpacer`)
+def rowShrinkTier(el: Element msg): Int =
+    if (elementHasFixedWidth(el)) 2
+    else match el {
+        ElText(_, _, _, _) -> 0,
+        ElParagraph(_, _, _, _) -> 0,
+        ElBox(bst, child) ->
+            if (isTransparentFitStyle(bst) && isSoftTextLeaf(child)) 0 else 1,
+        ElCol(bst, children) ->
+            if (!isTransparentFitStyle(bst)) 1
+            else {
+                let cur = cellNew(filterVisible(children));
+                let allSoft = cellNew(true);
+                while (match cellGet(cur) { Nil -> false, _ -> cellGet(allSoft) }) {
+                    match cellGet(cur) {
+                        Cons(c, r) -> {
+                            if (!isSoftTextLeaf(c)) cellSet(allSoft, false) else ();
+                            cellSet(cur, r)
+                        },
+                        Nil -> (),
+                    }
+                };
+                if (cellGet(allSoft)) 0 else 1
+            },
+        _ -> 1,
+    }
 
 def measureShrunkRowChildH(el: Element msg, allocW: Float, fallbackH: Float): Float = match el {
     ElParagraph(fn, lineH, _, txt) -> {
@@ -811,21 +865,30 @@ def measureShrunkRowChildH(el: Element msg, allocW: Float, fallbackH: Float): Fl
     _ -> fallbackH,
 }
 
-def computeRowScales(softSum: Float, rigidSum: Float, totalGaps: Float, availW: Float): (Float, Float, Float, Float) = {
+def computeRowScales(
+    softSum: Float,
+    fitSum: Float,
+    fixedSum: Float,
+    totalGaps: Float,
+    availW: Float
+): (Float, Float, Float, Float) = {
     let availFixed = maxFloat(0.0, availW - totalGaps);
-    let fixedSum = softSum + rigidSum;
-    let rigidScale = if (rigidSum > availFixed && rigidSum > 0.0) availFixed / rigidSum else 1.0;
-    let remAfterRigid = maxFloat(0.0, availFixed - rigidSum * rigidScale);
-    let softScale = if (softSum > remAfterRigid && softSum > 0.0) remAfterRigid / softSum else 1.0;
-    let remW = maxFloat(0.0, availFixed - fixedSum);
-    (softScale, rigidScale, remW, fixedSum)
+    let totalNonGrow = softSum + fitSum + fixedSum;
+    let fixedScale = if (fixedSum > availFixed && fixedSum > 0.0) availFixed / fixedSum else 1.0;
+    let remAfterFixed = maxFloat(0.0, availFixed - fixedSum * fixedScale);
+    let fitScale = if (fitSum > remAfterFixed && fitSum > 0.0) remAfterFixed / fitSum else 1.0;
+    let remAfterFit = maxFloat(0.0, remAfterFixed - fitSum * fitScale);
+    let softScale = if (softSum > remAfterFit && softSum > 0.0) remAfterFit / softSum else 1.0;
+    let remW = maxFloat(0.0, availFixed - totalNonGrow);
+    (softScale, fitScale, fixedScale, remW)
 }
 
 def measureRowMaxH(
     vis: List (Element msg),
     metas: List (Float, Float, Float, Int),
     softScale: Float,
-    rigidScale: Float,
+    fitScale: Float,
+    fixedScale: Float,
     remW: Float,
     gTotal: Float
 ): Float = {
@@ -842,7 +905,8 @@ def measureRowMaxH(
                         let allocW =
                             if (gx > 0.0) remW * (gx / gTotal)
                             else if (tier == 0) mw * softScale
-                            else mw * rigidScale;
+                            else if (tier == 1) mw * fitScale
+                            else mw * fixedScale;
                         let effH =
                             if (allocW < mw - 0.5 || (gx > 0.0 && allocW != mw))
                                 measureShrunkRowChildH(c, maxFloat(0.0, allocW), mh)
@@ -936,7 +1000,8 @@ pub def measureElement(el: Element msg, availW: Float, availH: Float): (Float, F
         let totalGaps = if (count > 1) intToFloat(count - 1) * st.bsGap else 0.0;
         let sumW = cellNew(0.0);
         let softSum = cellNew(0.0);
-        let rigidSum = cellNew(0.0);
+        let fitSum = cellNew(0.0);
+        let fixedSum = cellNew(0.0);
         let growSum = cellNew(0.0);
         let measuredRev: Cell (List (Float, Float, Float, Int)) = cellNew(Nil);
         let cur = cellNew(nonEmpty);
@@ -945,23 +1010,20 @@ pub def measureElement(el: Element msg, availW: Float, availH: Float): (Float, F
                 Cons(c, r) -> {
                     let (cw, ch) = measureElement(c, iw, ih);
                     let gx = elementGrowX(c);
-                    let tier = if (gx > 0.0) 2 else match c {
-                        ElText(_, _, _, _) -> 0,
-                        ElParagraph(_, _, _, _) -> 0,
-                        _ -> 1,
-                    };
+                    let tier = if (gx > 0.0) 3 else rowShrinkTier(c);
                     cellSet(sumW, cellGet(sumW) + cw);
                     if (gx > 0.0) cellSet(growSum, cellGet(growSum) + gx)
                     else if (tier == 0) cellSet(softSum, cellGet(softSum) + cw)
-                    else cellSet(rigidSum, cellGet(rigidSum) + cw);
+                    else if (tier == 1) cellSet(fitSum, cellGet(fitSum) + cw)
+                    else cellSet(fixedSum, cellGet(fixedSum) + cw);
                     cellSet(measuredRev, Cons((cw, ch, gx, tier), cellGet(measuredRev)));
                     cellSet(cur, r)
                 },
                 Nil -> (),
             }
         };
-        let (softScale, rigidScale, remW, _) = computeRowScales(cellGet(softSum), cellGet(rigidSum), totalGaps, iw);
-        let maxH = measureRowMaxH(nonEmpty, listRev(cellGet(measuredRev)), softScale, rigidScale, remW, cellGet(growSum));
+        let (softScale, fitScale, fixedScale, remW) = computeRowScales(cellGet(softSum), cellGet(fitSum), cellGet(fixedSum), totalGaps, iw);
+        let maxH = measureRowMaxH(nonEmpty, listRev(cellGet(measuredRev)), softScale, fitScale, fixedScale, remW, cellGet(growSum));
         (
             resolveIntrinsicAxis(st.bsWidth, cellGet(sumW) + totalGaps + st.bsPadL + st.bsPadR, availW, st.bsMinW, st.bsMaxW),
             resolveIntrinsicAxis(st.bsHeight, maxH + st.bsPadT + st.bsPadB, availH, st.bsMinH, st.bsMaxH)
@@ -1336,7 +1398,8 @@ def emitElement(
         if (n > 0) {
             let totalGaps = if (n > 1) intToFloat(n - 1) * st.bsGap else 0.0;
             let softSum = cellNew(0.0);
-            let rigidSum = cellNew(0.0);
+            let fitSum = cellNew(0.0);
+            let fixedSum = cellNew(0.0);
             let growSum = cellNew(0.0);
             let measuredRev: Cell (List (Element msg, Float, Float, Float, Int)) = cellNew(Nil);
             let c1 = cellNew(vis);
@@ -1344,20 +1407,22 @@ def emitElement(
                 match cellGet(c1) {
                     Cons(chEl, r) -> {
                         let gx = elementGrowX(chEl);
-                        let tier = if (gx > 0.0) 2 else rowShrinkTier(chEl);
+                        let tier = if (gx > 0.0) 3 else rowShrinkTier(chEl);
                         let (mw, mh) = measureElement(chEl, inner.rw, inner.rh);
                         if (gx > 0.0) cellSet(growSum, cellGet(growSum) + gx)
                         else if (tier == 0) cellSet(softSum, cellGet(softSum) + mw)
-                        else cellSet(rigidSum, cellGet(rigidSum) + mw);
+                        else if (tier == 1) cellSet(fitSum, cellGet(fitSum) + mw)
+                        else cellSet(fixedSum, cellGet(fixedSum) + mw);
                         cellSet(measuredRev, Cons((chEl, mw, mh, gx, tier), cellGet(measuredRev)));
                         cellSet(c1, r)
                     },
                     Nil -> (),
                 }
             };
-            let (softScale, rigidScale, remW, fixedSum) = computeRowScales(cellGet(softSum), cellGet(rigidSum), totalGaps, inner.rw);
+            let (softScale, fitScale, fixedScale, remW) = computeRowScales(cellGet(softSum), cellGet(fitSum), cellGet(fixedSum), totalGaps, inner.rw);
+            let totalNonGrow = cellGet(softSum) + cellGet(fitSum) + cellGet(fixedSum);
             let gTotal = cellGet(growSum);
-            let usedW = if (gTotal > 0.0 && remW > 0.0) inner.rw else minFloat(inner.rw, fixedSum + totalGaps);
+            let usedW = if (gTotal > 0.0 && remW > 0.0) inner.rw else minFloat(inner.rw, totalNonGrow + totalGaps);
             let curX = cellNew(inner.rx + alignOffset(st.bsAlignX, inner.rw, usedW));
             let c2El = cellNew(vis);
             let c2 = cellNew(listRev(cellGet(measuredRev)));
@@ -1371,7 +1436,8 @@ def emitElement(
                                 let rawCw =
                                     if (gx > 0.0) remW * (gx / gTotal)
                                     else if (tier == 0) mw * softScale
-                                    else mw * rigidScale;
+                                    else if (tier == 1) mw * fitScale
+                                    else mw * fixedScale;
                                 let cx = cellGet(curX);
                                 let cw = minFloat(rawCw, maxFloat(0.0, inner.rx + inner.rw - cx));
                                 let effH =

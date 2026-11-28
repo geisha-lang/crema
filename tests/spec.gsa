@@ -287,6 +287,29 @@ def testWrapRowAlignmentAndRowOverflow(): Result Void String = {
     };
     assertTrue("ElWrapRow leading zero-width spacer still aligns trailing chip to x=180", spOk)?;
 
+    // 8. ElBox(ElParagraph) in ElRow: measureElement must use rowShrinkTier (tier=0) and wrap >= 3 lines
+    let boxParaRow: Element RootMsg = col([fillSpace()], [row([wFixed(200.0), gap(8.0)], [
+        box([], paragraph(fontSans(14.0, 400), 20.0, th.thInk, "Alpha Beta Gamma Delta Epsilon Zeta")),
+        button(th, "c-btn", "ConfirmButton", Some(TopClicked))
+    ])]);
+    let (_, boxParaH) = measureElement(boxParaRow, 200.0, 200.0);
+    assertTrue("ElRow measures shrunk ElBox(ElParagraph) to >= 3 wrapped lines (>= 60px)", boxParaH >= 60.0)?;
+
+    // 9. 3-tier shrink priority: overflowing adaptive ElCol (tier=1) must NOT crush wFixed(64.0) (tier=2)
+    let colVsFixedRow: Element RootMsg = col([fillSpace()], [row([wFixed(220.0), gap(8.0)], [
+        col([gap(2.0)], [
+            button(th, "l1", "VeryLongAdaptiveLabelOne", None),
+            button(th, "l2", "VeryLongAdaptiveLabelTwo", None)
+        ]),
+        box([wFixed(64.0), hFixed(28.0)], button(th, "buy-btn", "Buy", Some(TopClicked)))
+    ])]);
+    let outColVsFixed = renderUiRoot(colVsFixedRow, mkCtx(), drawListNew());
+    let buyOk = match findHitRect(outColVsFixed.urHits, "buy-btn") {
+        Some(br) -> br.rx >= 220.0 - 64.0 - 0.1 && br.rx + br.rw <= 220.01,
+        None -> false,
+    };
+    assertTrue("ElRow protects wFixed(64.0) (tier=2) from overflowing adaptive ElCol (tier=1)", buyOk)?;
+
     printLn("  [PASS] crema.ui: ElWrapRow AlignMid/AlignEnd & ElRow overflow shrink protection");
     Ok(())
 }
