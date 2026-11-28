@@ -1,6 +1,7 @@
 # Crema — Declarative UI & 2D Stage Framework Makefile
 
 GEISHA ?= geisha
+NODE ?= node
 ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 BUILD_DIR := $(ROOT_DIR)/build
 
@@ -23,6 +24,7 @@ $(BUILD_DIR)/crema-studio: src/*.gsa examples/studio/app.gsa host/native/crema_m
 test: wasm native
 	"$(GEISHA)" test
 	"$(BUILD_DIR)/crema-studio" --headless-smoke
+	"$(NODE)" "$(ROOT_DIR)/tests/ime_host_test.mjs"
 
 serve: wasm
 	python3 -m http.server 8090 --directory "$(ROOT_DIR)"

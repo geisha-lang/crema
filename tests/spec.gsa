@@ -25,7 +25,7 @@ use crema.ui.{
     themeLight, themeDark,
     wFixed, hFixed, wGrow, hGrow, fillSpace, pad, gap, alignX, alignY,
     AlignStart, AlignMid, AlignEnd, AlignStretch,
-    Element, box, row, wrapRow, col, scrollView, scrollViewSticky, textAligned, paragraph, button, interactive,
+    Element, box, row, wrapRow, col, scrollView, scrollViewSticky, spacer, textAligned, paragraph, button, interactive,
     PlacedHitbox, UiHitAction, ActClick, UiFrameCtx, MkUiFrameCtx,
     measureElement, renderUiRoot, hitTestUi
 }
@@ -242,6 +242,50 @@ def testWrapRowAlignmentAndRowOverflow(): Result Void String = {
         None -> false,
     };
     assertTrue("ElRow shrinks overflowing non-grow text so right-side fixed tag stays inside bounds", rowOk)?;
+
+    // 4. ElRow 3-tier priority: SizeFit button must NOT be crushed alongside long ElText
+    let fitBtn = button(th, "ok-btn", "Confirm", Some(TopClicked));
+    let (fitBtnW, _) = measureElement(fitBtn, 200.0, 100.0);
+    let rowWithFitBtn: Element RootMsg = col([fillSpace()], [row([wFixed(200.0), gap(8.0), alignY(AlignMid)], [
+        textAligned(fontSans(14.0, 400), AlignLeft, th.thInk, "Very long title text that must yield space to the SizeFit action button"),
+        fitBtn
+    ])]);
+    let outFitBtn = renderUiRoot(rowWithFitBtn, mkCtx(), drawListNew());
+    let fitBtnOk = match findHitRect(outFitBtn.urHits, "ok-btn") {
+        Some(br) -> br.rx + br.rw <= 200.01 && br.rw >= fitBtnW - 0.5,
+        None -> false,
+    };
+    assertTrue("ElRow protects SizeFit button from being crushed by overflowing ElText", fitBtnOk)?;
+
+    // 5. ElRow cw == 0 ElText must NOT emit "..." OP_TEXT
+    let zeroTextDl = drawListNew();
+    let zeroTextRow: Element RootMsg = col([fillSpace()], [row([wFixed(60.0), gap(8.0)], [
+        textAligned(fontSans(14.0, 400), AlignLeft, th.thInk, "ShouldNotDrawEllipsis"),
+        box([wFixed(60.0), hFixed(24.0)], button(th, "full-btn", "Full", Some(TopClicked)))
+    ])]);
+    let _ = renderUiRoot(zeroTextRow, mkCtx(), zeroTextDl);
+    // Expected DrawList cmds: OP_CLEAR_BG(1) + button rect(1) + button text "Full"(1) = 3 (no extra OP_TEXT "...")
+    assertTrue("ElRow cw==0 ElText emits no ellipsis OP_TEXT", dlStrCount(zeroTextDl) == 1 && dlStrAt(zeroTextDl, 0) == "Full")?;
+
+    // 6. ElParagraph shrunk in ElRow re-measures height for wrapped lines
+    let paraRow: Element RootMsg = col([fillSpace()], [row([wFixed(200.0), gap(8.0)], [
+        paragraph(fontSans(14.0, 400), 20.0, th.thInk, "Alpha Beta Gamma Delta Epsilon Zeta"),
+        box([wFixed(90.0), hFixed(24.0)], button(th, "p-tag", "Tag", Some(TopClicked)))
+    ])]);
+    let (_, paraRowH) = measureElement(paraRow, 200.0, 200.0);
+    assertTrue("ElRow re-measures shrunk ElParagraph wrapped height (>= 40px)", paraRowH >= 40.0)?;
+
+    // 7. ElWrapRow with leading zero-width spacer(0.0, 20.0) & AlignEnd
+    let spacerWrap: Element RootMsg = col([fillSpace()], [wrapRow([wFixed(180.0), gap(8.0), alignX(AlignEnd)], 6.0, [
+        spacer(0.0, 20.0),
+        button(th, "sp-chip", "TagA", Some(TopClicked))
+    ])]);
+    let outSpacerWrap = renderUiRoot(spacerWrap, mkCtx(), drawListNew());
+    let spOk = match findHitRect(outSpacerWrap.urHits, "sp-chip") {
+        Some(sr) -> absFloat((sr.rx + sr.rw) - 180.0) < 1.0,
+        None -> false,
+    };
+    assertTrue("ElWrapRow leading zero-width spacer still aligns trailing chip to x=180", spOk)?;
 
     printLn("  [PASS] crema.ui: ElWrapRow AlignMid/AlignEnd & ElRow overflow shrink protection");
     Ok(())

@@ -42,6 +42,8 @@ export async function mountCremaApp(options = {}) {
   let cssH = Math.max(220, canvas.clientHeight || window.innerHeight);
   let layoutH = cssH;
   let dpr = Math.min(2.0, window.devicePixelRatio || 1);
+  let lastDrawSnap = null;
+  let snapImeId = "";
 
   function syncCanvasSize() {
     cssW = Math.max(320, canvas.clientWidth || window.innerWidth);
@@ -56,6 +58,7 @@ export async function mountCremaApp(options = {}) {
     if (canvas.width !== pw || canvas.height !== ph) {
       canvas.width = pw;
       canvas.height = ph;
+      if (lastDrawSnap) repaintCachedFrame();
     }
   }
   function syncVisualViewport() {
@@ -92,13 +95,17 @@ export async function mountCremaApp(options = {}) {
   let activeImeId = "";
   let lastImeKey = "none";
   let lastCaretActivityMs = 0;
+  let lastRenderedBlinkOn = true;
   let lastImeRender = null;
   let pendingClickX = null;
   let pendingFocusClick = null;
   let blurringFromHost = false;
-  let lastDrawSnap = null;
+  let isComposing = false;
+  let lastDispatchedImeVal = "";
   let frameCount = 0;
   let presentCount = 0;
+
+  const computeBlinkOn = (now) => (now - lastCaretActivityMs < 480) || (Math.floor(now / 530) % 2 === 0);
 
   function readStr(ptr) {
     const p = ptr >>> 0;
@@ -189,6 +196,7 @@ export async function mountCremaApp(options = {}) {
 
   function renderDrawListArrays(i32, f64, wordCount, getStr) {
     let frameIme = null;
+    let seenImeId = "";
     ctx.save();
     ctx.scale(dpr, dpr);
 
@@ -454,10 +462,18 @@ export async function mountCremaApp(options = {}) {
           const weight = Math.max(100, Math.min(900, (styleBits & 255) * 100));
           const fam = famCode === 1 ? fonts.serif : famCode === 2 ? fonts.mono : fonts.sans;
 
-          const liveVal = (imeInput && document.activeElement === imeInput && activeImeId === id && imeInput.value !== undefined)
-            ? imeInput.value
-            : val;
+          seenImeId = id;
           const hasDomFocus = !!(imeInput && document.activeElement === imeInput && activeImeId === id);
+          let liveVal = val;
+          if (hasDomFocus && imeInput.value !== undefined) {
+            if (!isComposing && val !== lastDispatchedImeVal) {
+              imeInput.value = val;
+              lastDispatchedImeVal = val;
+              const clamped = Math.min(val.length, imeInput.selectionEnd || 0);
+              try { imeInput.setSelectionRange(clamped, clamped); } catch (_) {}
+            }
+            liveVal = imeInput.value;
+          }
           let selStart = liveVal.length;
           let selEnd = liveVal.length;
           let caretIdx = liveVal.length;
@@ -472,7 +488,7 @@ export async function mountCremaApp(options = {}) {
           const fontStr = `${weight} ${sz}px ${fam}`;
           if (pendingFocusClick && pendingFocusClick.id === id && hasDomFocus) {
             if (selStart === selEnd) {
-              const snapped = caretIndexFromX(liveVal, pendingFocusClick.x, bx, padX, 0, fontStr);
+              const snapped = caretIndexFromX(liveVal, pendingFocusClick.x, bx, padX, pendingFocusClick.scrollX || 0, fontStr);
               try { imeInput.setSelectionRange(snapped, snapped); } catch (_) {}
               selStart = snapped;
               selEnd = snapped;
@@ -517,7 +533,8 @@ export async function mountCremaApp(options = {}) {
           }
 
           const now = performance.now();
-          const blinkOn = (now - lastCaretActivityMs < 480) || (Math.floor(now / 530) % 2 === 0);
+          const blinkOn = computeBlinkOn(now);
+          lastRenderedBlinkOn = blinkOn;
           if (blinkOn && caretCol !== 0 && selStart === selEnd) {
             const padAfter = caretIdx >= liveVal.length && liveVal.length > 0 ? 1.0 : 0.0;
             const cx = ix + prefixW - scrollX + padAfter;
@@ -537,6 +554,7 @@ export async function mountCremaApp(options = {}) {
         }
         case 15: { // OP_IME_CLEAR (1 word)
           frameIme = null;
+          seenImeId = "";
           w += 1;
           break;
         }
@@ -557,6 +575,7 @@ export async function mountCremaApp(options = {}) {
 
     ctx.restore();
     syncImeBox(frameIme);
+    return seenImeId;
   }
 
   function executeBinaryDrawList(wordsPtr, wordCount, strsPtr, strCount) {
@@ -578,11 +597,12 @@ export async function mountCremaApp(options = {}) {
       wordCount,
       strs,
     };
-    renderDrawListArrays(i32View, f64View, wordCount, (idx) => (idx >= 0 && idx < strCount ? strs[idx] : ""));
+    snapImeId = renderDrawListArrays(i32View, f64View, wordCount, (idx) => (idx >= 0 && idx < strCount ? strs[idx] : ""));
   }
 
   function repaintCachedFrame() {
     if (!lastDrawSnap) return;
+    if (activeImeId && snapImeId !== activeImeId) return;
     renderDrawListArrays(
       lastDrawSnap.i32,
       lastDrawSnap.f64,
@@ -612,6 +632,7 @@ export async function mountCremaApp(options = {}) {
         const val = readStr(valPtr);
         const effPadX = Number.isFinite(padX) ? padX : 8;
         activeImeId = id;
+        lastDispatchedImeVal = val;
         lastCaretActivityMs = performance.now();
         syncImeBox({ id, val, x, y, w, h, padX: effPadX });
         if (imeInput) {
@@ -624,7 +645,7 @@ export async function mountCremaApp(options = {}) {
               : `400 14px ${fonts.sans}`;
             const scrollX = (lastImeRender && lastImeRender.id === id) ? lastImeRender.scrollX : 0;
             caretPos = caretIndexFromX(val, pendingClickX, x, effPadX, scrollX, fontStr);
-            pendingFocusClick = { id, x: pendingClickX };
+            pendingFocusClick = { id, x: pendingClickX, scrollX };
           }
           try { imeInput.setSelectionRange(caretPos, caretPos); } catch (_) {}
         }
@@ -632,6 +653,8 @@ export async function mountCremaApp(options = {}) {
       crema_host_blur_ime: () => {
         const wasFocused = !!(imeInput && document.activeElement === imeInput);
         activeImeId = "";
+        isComposing = false;
+        lastDispatchedImeVal = "";
         pendingClickX = null;
         pendingFocusClick = null;
         lastImeRender = null;
@@ -730,7 +753,9 @@ export async function mountCremaApp(options = {}) {
 
   if (imeInput) {
     const syncText = () => {
+      pendingFocusClick = null;
       lastCaretActivityMs = performance.now();
+      lastDispatchedImeVal = imeInput.value;
       if (activeImeId && wasmExports.crema_text_input) {
         invokeWasm(() => wasmExports.crema_text_input(writeStr(activeImeId), writeStr(imeInput.value)));
       }
@@ -743,8 +768,15 @@ export async function mountCremaApp(options = {}) {
       }
     };
     imeInput.addEventListener("input", syncText);
+    imeInput.addEventListener("compositionstart", () => {
+      isComposing = true;
+      pendingFocusClick = null;
+    });
     imeInput.addEventListener("compositionupdate", syncText);
-    imeInput.addEventListener("compositionend", syncText);
+    imeInput.addEventListener("compositionend", () => {
+      isComposing = false;
+      syncText();
+    });
     imeInput.addEventListener("keyup", syncSelectionOnly);
     let imeDownX = 0, imeDownY = 0;
     imeInput.addEventListener("pointerdown", (ev) => {
@@ -753,12 +785,13 @@ export async function mountCremaApp(options = {}) {
     });
     imeInput.addEventListener("mouseup", (ev) => {
       if (
+        !isComposing &&
         activeImeId &&
         document.activeElement === imeInput &&
         lastImeRender &&
         lastImeRender.id === activeImeId &&
-        Math.hypot(ev.clientX - imeDownX, ev.clientY - imeDownY) <= 4 &&
-        imeInput.selectionStart === imeInput.selectionEnd
+        (ev.detail || 1) <= 1 &&
+        Math.hypot(ev.clientX - imeDownX, ev.clientY - imeDownY) <= 4
       ) {
         const r = canvas.getBoundingClientRect();
         const clickX = ev.clientX - r.left;
@@ -777,16 +810,34 @@ export async function mountCremaApp(options = {}) {
     imeInput.addEventListener("touchend", syncSelectionOnly);
     document.addEventListener("selectionchange", syncSelectionOnly);
     imeInput.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter" && !ev.isComposing && activeImeId && wasmExports.crema_text_submit) {
+      const composing = isComposing || ev.isComposing || ev.keyCode === 229;
+      if (
+        !composing &&
+        !ev.metaKey &&
+        !ev.ctrlKey &&
+        !ev.altKey &&
+        (ev.key.length === 1 ||
+          ev.key === "Backspace" ||
+          ev.key === "Delete" ||
+          ev.key === "ArrowLeft" ||
+          ev.key === "ArrowRight" ||
+          ev.key === "Home" ||
+          ev.key === "End")
+      ) {
+        pendingFocusClick = null;
+      }
+      if (ev.key === "Enter" && !composing && activeImeId && wasmExports.crema_text_submit) {
         ev.preventDefault();
         invokeWasm(() => wasmExports.crema_text_submit(writeStr(activeImeId)));
-      } else if (ev.key === "Escape") {
+      } else if (ev.key === "Escape" && !composing) {
         ev.preventDefault();
         imeInput.blur();
       }
     });
     imeInput.addEventListener("blur", () => {
       activeImeId = "";
+      isComposing = false;
+      lastDispatchedImeVal = "";
       pendingClickX = null;
       pendingFocusClick = null;
       lastImeRender = null;
@@ -804,7 +855,13 @@ export async function mountCremaApp(options = {}) {
     lastTs = ts;
     if (!document.hidden && wasmExports.crema_step_frame) {
       frameCount++;
-      invokeWasm(() => wasmExports.crema_step_frame(dt, cssW, layoutH));
+      const rendered = invokeWasm(() => wasmExports.crema_step_frame(dt, cssW, layoutH));
+      if (!rendered && activeImeId && imeInput && document.activeElement === imeInput && lastDrawSnap) {
+        const blinkOn = computeBlinkOn(performance.now());
+        if (blinkOn !== lastRenderedBlinkOn) {
+          repaintCachedFrame();
+        }
+      }
       if (options.onAfterFrame) options.onAfterFrame();
     }
     requestAnimationFrame(loop);

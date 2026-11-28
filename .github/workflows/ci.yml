@@ -51,6 +51,11 @@ jobs:
       - name: Add Geisha to PATH
         run: echo "$HOME/.geisha/bin" >> "$GITHUB_PATH"
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Typecheck, docs, headless unit suite & Wasm32 Studio build
         run: |
           geisha check
@@ -58,6 +63,7 @@ jobs:
           geisha test
           make wasm
           test -s build/studio.wasm
+          node tests/ime_host_test.mjs
 
   macos-native:
     name: Test & Native Smoke (darwin-arm64)
@@ -109,6 +115,11 @@ jobs:
           if [ -d /opt/homebrew/opt/lld/bin ]; then
             echo "/opt/homebrew/opt/lld/bin" >> "$GITHUB_PATH"
           fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       - name: Run full Wasm32 + macOS Cocoa/Quartz2D build & smoke test
         env:
