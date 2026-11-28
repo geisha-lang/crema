@@ -11,12 +11,12 @@ pub extern "crema_host_present" def cremaHostPresent(
 ): Void
 
 pub extern "crema_host_set_cursor" def cremaHostSetCursor(cursor: String): Void
-pub extern "crema_host_focus_ime" def cremaHostFocusIme(inputId: String, value: String, x: Float, y: Float, w: Float, h: Float): Void
+pub extern "crema_host_focus_ime" def cremaHostFocusIme(inputId: String, value: String, x: Float, y: Float, w: Float, h: Float, padX: Float): Void
 pub extern "crema_host_blur_ime" def cremaHostBlurIme(): Void
 
 pub def envHost(): HostBridge = MkHostBridge {
     hbPresent: (w, wc, s, sc) -> cremaHostPresent(w, wc, s, sc),
     hbSetCursor: (c) -> cremaHostSetCursor(c),
-    hbFocusIme: (id, v, x, y, w, h) -> cremaHostFocusIme(id, v, x, y, w, h),
+    hbFocusIme: (id, v, x, y, w, h, px) -> cremaHostFocusIme(id, v, x, y, w, h, px),
     hbBlurIme: () -> cremaHostBlurIme(),
 }

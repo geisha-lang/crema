@@ -625,7 +625,7 @@ pub def canvasInteractive(
 
 pub data UiHitAction msg {
     ActClick(msg),
-    ActFocusInput(String, String, Rect, String -> msg, Option msg),
+    ActFocusInput(String, String, Rect, Float, String -> msg, Option msg),
     ActSwallow,
 }
 
@@ -1020,6 +1020,30 @@ def pushClippedHit(
     None -> (),
 }
 
+def isFixedWidthAxis(sz: AxisSize): Bool = match sz {
+    SizeFixed(_) -> true,
+    SizePercent(_) -> true,
+    _ -> false,
+}
+
+def isRigidWidthElement(el: Element msg): Bool = match el {
+    ElSpacer(_, _, g) -> g <= 0.0,
+    ElProgressBar(st, _, _, _, _, _, _, _) -> isFixedWidthAxis(st.bsWidth),
+    ElImage(st, _, _) -> isFixedWidthAxis(st.bsWidth),
+    ElButton(_, st, _, _, _, _, _) -> isFixedWidthAxis(st.bsWidth),
+    ElInteractive(_, st, _, _, _, _) -> isFixedWidthAxis(st.bsWidth),
+    ElTextInput(_, st, _, _, _, _, _, _, _, _) -> isFixedWidthAxis(st.bsWidth),
+    ElCanvas(st, _) -> isFixedWidthAxis(st.bsWidth),
+    ElCanvasInteractive(st, _, _, _) -> isFixedWidthAxis(st.bsWidth),
+    ElBox(st, _) -> isFixedWidthAxis(st.bsWidth),
+    ElRow(st, _) -> isFixedWidthAxis(st.bsWidth),
+    ElWrapRow(st, _, _) -> isFixedWidthAxis(st.bsWidth),
+    ElCol(st, _) -> isFixedWidthAxis(st.bsWidth),
+    ElZStack(st, _) -> isFixedWidthAxis(st.bsWidth),
+    ElScroll(_, _, st, _) -> isFixedWidthAxis(st.bsWidth),
+    _ -> false,
+}
+
 def emitElement(
     el: Element msg,
     bounds: Rect,
@@ -1133,7 +1157,7 @@ def emitElement(
             };
             popClip(dl)
         };
-        pushClippedHit(hits, mClip, bounds, "input:" + inpId, "text", ActFocusInput(inpId, val, bounds, onInp, mSub))
+        pushClippedHit(hits, mClip, bounds, "input:" + inpId, "text", ActFocusInput(inpId, val, bounds, st.bsPadL, onInp, mSub))
     },
     ElCanvas(st, renderFn) -> {
         emitBoxBackground(dl, st, bounds);
@@ -1230,39 +1254,53 @@ def emitElement(
         let n = listLen(vis);
         if (n > 0) {
             let totalGaps = if (n > 1) intToFloat(n - 1) * st.bsGap else 0.0;
-            let fixedSum = cellNew(0.0);
+            let rigidSum = cellNew(0.0);
+            let shrinkSum = cellNew(0.0);
             let growSum = cellNew(0.0);
-            let measuredRev: Cell (List (Element msg, Float, Float, Float)) = cellNew(Nil);
+            let measuredRev: Cell (List (Element msg, Float, Float, Float, Bool)) = cellNew(Nil);
             let c1 = cellNew(vis);
             while (match cellGet(c1) { Nil -> false, _ -> true }) {
                 match cellGet(c1) {
                     Cons(chEl, r) -> {
                         let gx = elementGrowX(chEl);
+                        let rigid = gx <= 0.0 && isRigidWidthElement(chEl);
                         let (mw, mh) = measureElement(chEl, inner.rw, inner.rh);
                         if (gx > 0.0) cellSet(growSum, cellGet(growSum) + gx)
-                        else cellSet(fixedSum, cellGet(fixedSum) + mw);
-                        cellSet(measuredRev, Cons((chEl, mw, mh, gx), cellGet(measuredRev)));
+                        else if (rigid) cellSet(rigidSum, cellGet(rigidSum) + mw)
+                        else cellSet(shrinkSum, cellGet(shrinkSum) + mw);
+                        cellSet(measuredRev, Cons((chEl, mw, mh, gx, rigid), cellGet(measuredRev)));
                         cellSet(c1, r)
                     },
                     Nil -> (),
                 }
             };
-            let remW = maxFloat(0.0, inner.rw - cellGet(fixedSum) - totalGaps);
+            let availFixed = maxFloat(0.0, inner.rw - totalGaps);
+            let rSum = cellGet(rigidSum);
+            let sSum = cellGet(shrinkSum);
+            let fixedSum = rSum + sSum;
+            let rigidScale = if (rSum > availFixed && rSum > 0.0) availFixed / rSum else 1.0;
+            let remAfterRigid = maxFloat(0.0, availFixed - rSum * rigidScale);
+            let shrinkScale = if (sSum > remAfterRigid && sSum > 0.0) remAfterRigid / sSum else 1.0;
+            let remW = maxFloat(0.0, availFixed - fixedSum);
             let gTotal = cellGet(growSum);
             let measured = listRev(cellGet(measuredRev));
-            let usedW = if (gTotal > 0.0) inner.rw else minFloat(inner.rw, cellGet(fixedSum) + totalGaps);
+            let usedW = if (gTotal > 0.0 && remW > 0.0) inner.rw else minFloat(inner.rw, fixedSum + totalGaps);
             let curX = cellNew(inner.rx + alignOffset(st.bsAlignX, inner.rw, usedW));
             let c2 = cellNew(measured);
             while (match cellGet(c2) { Nil -> false, _ -> true }) {
                 match cellGet(c2) {
-                    Cons((chEl, mw, mh, gx), r) -> {
-                        let cw = if (gx > 0.0) remW * (gx / gTotal) else mw;
+                    Cons((chEl, mw, mh, gx, rigid), r) -> {
+                        let rawCw =
+                            if (gx > 0.0) remW * (gx / gTotal)
+                            else if (rigid) mw * rigidScale
+                            else mw * shrinkScale;
+                        let cx = cellGet(curX);
+                        let cw = minFloat(rawCw, maxFloat(0.0, inner.rx + inner.rw - cx));
                         let ch = match st.bsAlignY {
                             AlignStretch -> inner.rh,
                             _ -> if (elementGrowY(chEl) > 0.0) inner.rh else minFloat(inner.rh, mh),
                         };
                         let cy = inner.ry + alignOffset(st.bsAlignY, inner.rh, ch);
-                        let cx = cellGet(curX);
                         emitElement(chEl, rect(cx, cy, cw, ch), nextClip, ctx, dl, hits, scrolls, drags, wheels, activeIme);
                         cellSet(curX, cx + cw + st.bsGap);
                         cellSet(c2, r)
@@ -1287,32 +1325,80 @@ def emitElement(
         if (st.bsClip) pushClip(dl, inner) else ();
         let nextClip = if (st.bsClip) clipHitRect(inner, mClip) else mClip;
         let vis = filterVisible(children);
-        let curX = cellNew(inner.rx);
-        let curY = cellNew(inner.ry);
-        let lineH = cellNew(0.0);
-        let cur = cellNew(vis);
-        while (match cellGet(cur) { Nil -> false, _ -> true }) {
-            match cellGet(cur) {
-                Cons(chEl, rest) -> {
-                    let (mw, mh) = measureElement(chEl, inner.rw, inner.rh);
-                    let cw = minFloat(inner.rw, mw);
-                    let x0 = cellGet(curX);
-                    let y0 = cellGet(curY);
-                    let lh = cellGet(lineH);
-                    let (nx, ny, nlh) =
-                        if (x0 > inner.rx && x0 + cw > inner.rx + inner.rw)
-                            (inner.rx, y0 + lh + rowGap, mh)
-                        else
-                            (x0, y0, maxFloat(lh, mh));
-                    emitElement(chEl, rect(nx, ny, cw, mh), nextClip, ctx, dl, hits, scrolls, drags, wheels, activeIme);
-                    cellSet(curX, nx + cw + st.bsGap);
-                    cellSet(curY, ny);
-                    cellSet(lineH, nlh);
-                    cellSet(cur, rest)
-                },
-                Nil -> (),
+        if (listLen(vis) > 0) {
+            let iw = maxFloat(1.0, inner.rw);
+            let linesRev: Cell (List (Float, Float, List (Element msg, Float, Float))) = cellNew(Nil);
+            let curLineRev: Cell (List (Element msg, Float, Float)) = cellNew(Nil);
+            let lineW = cellNew(0.0);
+            let lineH = cellNew(0.0);
+            let totalH = cellNew(0.0);
+            let lineCount = cellNew(0);
+            let cur = cellNew(vis);
+            while (match cellGet(cur) { Nil -> false, _ -> true }) {
+                match cellGet(cur) {
+                    Cons(chEl, rest) -> {
+                        let (mw, mh) = measureElement(chEl, iw, inner.rh);
+                        let cw = minFloat(iw, mw);
+                        let lw = cellGet(lineW);
+                        let lh = cellGet(lineH);
+                        if (lw > 0.0 && lw + st.bsGap + cw > iw) {
+                            cellSet(linesRev, Cons((lw, lh, listRev(cellGet(curLineRev))), cellGet(linesRev)));
+                            cellSet(totalH, cellGet(totalH) + lh + (if (cellGet(lineCount) > 0) rowGap else 0.0));
+                            cellSet(lineCount, cellGet(lineCount) + 1);
+                            cellSet(curLineRev, Cons((chEl, cw, mh), Nil));
+                            cellSet(lineW, cw);
+                            cellSet(lineH, mh)
+                        } else {
+                            cellSet(curLineRev, Cons((chEl, cw, mh), cellGet(curLineRev)));
+                            cellSet(lineW, if (lw > 0.0) lw + st.bsGap + cw else cw);
+                            if (mh > lh) cellSet(lineH, mh) else ()
+                        };
+                        cellSet(cur, rest)
+                    },
+                    Nil -> (),
+                }
+            };
+            let lastLineItems = listRev(cellGet(curLineRev));
+            let lastLw = cellGet(lineW);
+            let lastLh = cellGet(lineH);
+            cellSet(linesRev, Cons((lastLw, lastLh, lastLineItems), cellGet(linesRev)));
+            cellSet(totalH, cellGet(totalH) + lastLh + (if (cellGet(lineCount) > 0) rowGap else 0.0));
+            let lines = listRev(cellGet(linesRev));
+            let startY = inner.ry + match st.bsAlignY {
+                AlignStretch -> 0.0,
+                _ -> alignOffset(st.bsAlignY, inner.rh, cellGet(totalH)),
+            };
+            let curY = cellNew(startY);
+            let lCur = cellNew(lines);
+            while (match cellGet(lCur) { Nil -> false, _ -> true }) {
+                match cellGet(lCur) {
+                    Cons((lw, lh, items), lRest) -> {
+                        let lineY = cellGet(curY);
+                        let curX = cellNew(inner.rx + alignOffset(st.bsAlignX, inner.rw, lw));
+                        let iCur = cellNew(items);
+                        while (match cellGet(iCur) { Nil -> false, _ -> true }) {
+                            match cellGet(iCur) {
+                                Cons((chEl, cw, mh), iRest) -> {
+                                    let ch = match st.bsAlignY {
+                                        AlignStretch -> lh,
+                                        _ -> if (elementGrowY(chEl) > 0.0) lh else minFloat(lh, mh),
+                                    };
+                                    let cy = lineY + alignOffset(st.bsAlignY, lh, ch);
+                                    let cx = cellGet(curX);
+                                    emitElement(chEl, rect(cx, cy, cw, ch), nextClip, ctx, dl, hits, scrolls, drags, wheels, activeIme);
+                                    cellSet(curX, cx + cw + st.bsGap);
+                                    cellSet(iCur, iRest)
+                                },
+                                Nil -> (),
+                            }
+                        };
+                        cellSet(curY, lineY + lh + rowGap);
+                        cellSet(lCur, lRest)
+                    },
+                    Nil -> (),
+                }
             }
-        };
+        } else ();
         if (st.bsClip) popClip(dl) else ()
     },
     ElCol(st, children) -> {

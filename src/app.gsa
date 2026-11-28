@@ -27,7 +27,7 @@ pub data HostBridge {
     MkHostBridge {
         hbPresent: (MutArray Int64, Int, MutArray String, Int) -> Void,
         hbSetCursor: String -> Void,
-        hbFocusIme: (String, String, Float, Float, Float, Float) -> Void,
+        hbFocusIme: (String, String, Float, Float, Float, Float, Float) -> Void,
         hbBlurIme: () -> Void,
     },
 }
@@ -35,7 +35,7 @@ pub data HostBridge {
 pub def headlessHost(): HostBridge = MkHostBridge {
     hbPresent: (_w, _wc, _s, _sc) -> (),
     hbSetCursor: (_c) -> (),
-    hbFocusIme: (_id, _v, _x, _y, _w, _h) -> (),
+    hbFocusIme: (_id, _v, _x, _y, _w, _h, _px) -> (),
     hbBlurIme: () -> (),
 }
 
@@ -51,6 +51,7 @@ pub data Cmd msg {
     CmdScrollTo(String, Float),
     CmdScrollToBottom(String),
     CmdBlurIme,
+    CmdRedraw,
 }
 
 pub def mapCmd(f: a -> b, cmd: Cmd a): Cmd b = match cmd {
@@ -61,6 +62,7 @@ pub def mapCmd(f: a -> b, cmd: Cmd a): Cmd b = match cmd {
     CmdScrollTo(sid, off) -> CmdScrollTo(sid, off),
     CmdScrollToBottom(sid) -> CmdScrollToBottom(sid),
     CmdBlurIme -> CmdBlurIme,
+    CmdRedraw -> CmdRedraw,
 }
 
 instance Functor Cmd {
@@ -70,6 +72,7 @@ instance Functor Cmd {
 pub def cmdNone(): Cmd msg = CmdNone
 pub def cmdBatch(cs: List (Cmd msg)): Cmd msg = CmdBatch(cs)
 pub def cmdPerform(effect: () -> Void): Cmd msg = CmdPerform(effect)
+pub def cmdRedraw(): Cmd msg = CmdRedraw
 
 // ============================================================================
 // 3. Declarative `AppConfig model msg` & Managed `Runtime model msg`
@@ -138,6 +141,7 @@ pub data Runtime model msg {
         rtDrags: Cell (List (PlacedDrag msg)),
         rtWheels: Cell (List (PlacedWheel msg)),
         rtDirty: Cell Bool,
+        rtTickAutoDirty: Cell Bool,
     },
 }
 
@@ -175,6 +179,7 @@ def runCmdQueue(rt: Runtime model msg, firstCmd: Cmd msg): Void = {
                         } else ();
                         rt.rtHost.hbBlurIme()
                     },
+                    CmdRedraw -> cellSet(rt.rtDirty, true),
                 }
             },
             Nil -> (),
@@ -211,6 +216,7 @@ pub def runtimeCreate(cfg: AppConfig model msg, width: Float, height: Float, hos
         rtDrags: cellNew(Nil),
         rtWheels: cellNew(Nil),
         rtDirty: cellNew(true),
+        rtTickAutoDirty: cellNew(true),
     };
     runCmdQueue(rt, initCmd);
     rt
@@ -219,6 +225,8 @@ pub def runtimeCreate(cfg: AppConfig model msg, width: Float, height: Float, hos
 pub def rtModel(rt: Runtime model msg): model = cellGet(rt.rtModel)
 pub def rtDrawList(rt: Runtime model msg): DrawList = rt.rtDrawList
 pub def rtIsDirty(rt: Runtime model msg): Bool = cellGet(rt.rtDirty)
+pub def rtSetTickAutoDirty(rt: Runtime model msg, autoDirty: Bool): Void = cellSet(rt.rtTickAutoDirty, autoDirty)
+pub def rtMarkDirty(rt: Runtime model msg): Void = cellSet(rt.rtDirty, true)
 
 // Renders current view into `rt.rtDrawList` and updates hitboxes/scroll bounds
 pub def rtRenderOffscreen(rt: Runtime model msg): DrawList = {
@@ -288,7 +296,7 @@ pub def rtStepFrame(rt: Runtime model msg, dtMs: Float, width: Float, height: Fl
         Some(tickFn) -> {
             let (m1, cmd) = tickFn(dtMs, cellGet(rt.rtViewport), cellGet(rt.rtModel));
             cellSet(rt.rtModel, m1);
-            cellSet(rt.rtDirty, true);
+            if (cellGet(rt.rtTickAutoDirty)) cellSet(rt.rtDirty, true) else ();
             runCmdQueue(rt, cmd)
         },
         None -> (),
@@ -339,12 +347,12 @@ pub def rtPointerClick(rt: Runtime model msg, x: Float, y: Float): Void = {
                 } else ();
                 rtDispatch(rt, actionMsg)
             },
-            ActFocusInput(inpId, curVal, r, onInp, mSub) -> {
+            ActFocusInput(inpId, curVal, r, padX, onInp, mSub) -> {
                 cellSet(rt.rtFocusedInput, inpId);
                 cellSet(rt.rtInputHandler, Some(onInp));
                 cellSet(rt.rtSubmitMsg, mSub);
                 cellSet(rt.rtDirty, true);
-                rt.rtHost.hbFocusIme(inpId, curVal, r.rx, r.ry, r.rw, r.rh)
+                rt.rtHost.hbFocusIme(inpId, curVal, r.rx, r.ry, r.rw, r.rh, padX)
             },
             ActSwallow ->
                 if (strLen(cellGet(rt.rtFocusedInput)) > 0) {
