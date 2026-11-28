@@ -19,13 +19,14 @@ use crema.gfx.{
     opClearBg, opRect, opPolygon, opText,
     unpackLo32, unpackHi32,
     drawListNew, dlClear, dlWordCount, dlStrCount, dlCmdCount, dlWordAt, dlFloatAt, dlStrAt,
-    drawClearBg, drawRect, drawPolygon, drawText, AlignCenter, absFloat
+    drawClearBg, drawRect, drawPolygon, drawText, AlignLeft, AlignCenter, absFloat
 }
 use crema.ui.{
     themeLight, themeDark,
-    wFixed, hFixed, wGrow, hGrow, fillSpace, pad, gap,
-    Element, row, wrapRow, col, scrollView, scrollViewSticky, paragraph, button,
-    UiHitAction, ActClick, UiFrameCtx, MkUiFrameCtx,
+    wFixed, hFixed, wGrow, hGrow, fillSpace, pad, gap, alignX, alignY,
+    AlignStart, AlignMid, AlignEnd, AlignStretch,
+    Element, box, row, wrapRow, col, scrollView, scrollViewSticky, spacer, textAligned, paragraph, button, interactive,
+    PlacedHitbox, UiHitAction, ActClick, UiFrameCtx, MkUiFrameCtx,
     measureElement, renderUiRoot, hitTestUi
 }
 use crema.stage.{
@@ -36,8 +37,9 @@ use crema.stage.{
     MkBurstConfig, spawnBurst2D, stepParticles2D
 }
 use crema.app.{
-    Cmd, CmdNone, CmdEmit, cmdBatch, cmdPerform, headlessHost,
-    basicUiApp, runtimeCreate, rtModel, rtStepFrame, rtPointerClick
+    Cmd, CmdNone, CmdEmit, CmdRedraw, cmdBatch, cmdPerform, cmdRedraw, headlessHost,
+    AppConfig, MkAppConfig, basicUiApp, realtimeGameApp, runtimeCreate, rtModel,
+    rtStepFrame, rtPointerClick, rtSetTickAutoDirty, rtMarkDirty
 }
 
 def assertTrue(label: String, ok: Bool): Result Void String =
@@ -163,6 +165,155 @@ def testUiLayoutAndFunctor(): Result Void String = {
     Ok(())
 }
 
+def findHitRect(hits: List (PlacedHitbox msg), key: String): Option Rect = {
+    let cur = cellNew(hits);
+    let found: Cell (Option Rect) = cellNew(None);
+    while (match cellGet(cur) { Nil -> false, _ -> true }) {
+        match cellGet(cur) {
+            Cons(hb, r) -> {
+                if (hb.phKey == key) {
+                    cellSet(found, Some(hb.phRect));
+                    cellSet(cur, Nil)
+                } else cellSet(cur, r)
+            },
+            Nil -> (),
+        }
+    };
+    cellGet(found)
+}
+
+def testWrapRowAlignmentAndRowOverflow(): Result Void String = {
+    let th = themeLight();
+    let mkCtx = () -> MkUiFrameCtx {
+        ufTheme: th,
+        ufViewport: rect(0.0, 0.0, 240.0, 300.0),
+        ufPointer: vec2(0.0, 0.0),
+        ufPointerDown: false,
+        ufHoveredKey: "",
+        ufFocusedInput: "",
+        ufScrolls: strMapNew(),
+    };
+
+    // 1. ElWrapRow with alignX(AlignMid): each line must be centered independently inside 180px
+    let midWrap: Element RootMsg = col([fillSpace()], [wrapRow([wFixed(180.0), gap(8.0), alignX(AlignMid)], 6.0, [
+        button(th, "chip-1", "TagA", Some(TopClicked)),
+        button(th, "chip-2", "TagB", Some(TopClicked)),
+        button(th, "chip-3", "WideChipTag", Some(TopClicked))
+    ])]);
+    let outMid = renderUiRoot(midWrap, mkCtx(), drawListNew());
+    let midOk = match (findHitRect(outMid.urHits, "chip-1"), findHitRect(outMid.urHits, "chip-2"), findHitRect(outMid.urHits, "chip-3")) {
+        (Some(r1), Some(r2), Some(r3)) ->
+            r1.rx > 1.0 &&
+            absFloat((r1.rx + r1.rw + 8.0) - r2.rx) < 0.5 &&
+            absFloat(((r1.rx + r2.rx + r2.rw) * 0.5) - 90.0) < 1.0 &&
+            r3.ry > r1.ry + r1.rh &&
+            r3.rx > 1.0 &&
+            absFloat((r3.rx + r3.rw * 0.5) - 90.0) < 1.0,
+        _ -> false,
+    };
+    assertTrue("ElWrapRow alignX(AlignMid) centers each wrapped line", midOk)?;
+
+    // 2. ElWrapRow with alignX(AlignEnd): each line's rightmost chip must touch x = 180.0
+    let endWrap: Element RootMsg = col([fillSpace()], [wrapRow([wFixed(180.0), gap(8.0), alignX(AlignEnd)], 6.0, [
+        button(th, "chip-1", "TagA", Some(TopClicked)),
+        button(th, "chip-2", "TagB", Some(TopClicked)),
+        button(th, "chip-3", "WideChipTag", Some(TopClicked))
+    ])]);
+    let outEnd = renderUiRoot(endWrap, mkCtx(), drawListNew());
+    let endOk = match (findHitRect(outEnd.urHits, "chip-2"), findHitRect(outEnd.urHits, "chip-3")) {
+        (Some(r2), Some(r3)) ->
+            absFloat((r2.rx + r2.rw) - 180.0) < 1.0 &&
+            absFloat((r3.rx + r3.rw) - 180.0) < 1.0,
+        _ -> false,
+    };
+    assertTrue("ElWrapRow alignX(AlignEnd) right-aligns each wrapped line", endOk)?;
+
+    // 3. ElRow overflow shrink protection: long non-grow text + right-side fixed tag in 200px row
+    let overflowRow: Element RootMsg = col([fillSpace()], [row([wFixed(200.0), gap(8.0), alignY(AlignMid)], [
+        textAligned(fontSans(14.0, 400), AlignLeft, th.thInk, "This is a very long title string that would overflow 200px without shrink protection"),
+        box([wFixed(60.0), hFixed(24.0)], button(th, "tag-btn", "Tag", Some(TopClicked)))
+    ])]);
+    let outRow = renderUiRoot(overflowRow, mkCtx(), drawListNew());
+    let rowOk = match findHitRect(outRow.urHits, "tag-btn") {
+        Some(tagRect) ->
+            tagRect.rx + tagRect.rw <= 200.01 &&
+            tagRect.rw > 20.0 &&
+            tagRect.rx >= 139.9,
+        None -> false,
+    };
+    assertTrue("ElRow shrinks overflowing non-grow text so right-side fixed tag stays inside bounds", rowOk)?;
+
+    // 4. ElRow 3-tier priority: SizeFit button must NOT be crushed alongside long ElText
+    let fitBtn = button(th, "ok-btn", "Confirm", Some(TopClicked));
+    let (fitBtnW, _) = measureElement(fitBtn, 200.0, 100.0);
+    let rowWithFitBtn: Element RootMsg = col([fillSpace()], [row([wFixed(200.0), gap(8.0), alignY(AlignMid)], [
+        textAligned(fontSans(14.0, 400), AlignLeft, th.thInk, "Very long title text that must yield space to the SizeFit action button"),
+        fitBtn
+    ])]);
+    let outFitBtn = renderUiRoot(rowWithFitBtn, mkCtx(), drawListNew());
+    let fitBtnOk = match findHitRect(outFitBtn.urHits, "ok-btn") {
+        Some(br) -> br.rx + br.rw <= 200.01 && br.rw >= fitBtnW - 0.5,
+        None -> false,
+    };
+    assertTrue("ElRow protects SizeFit button from being crushed by overflowing ElText", fitBtnOk)?;
+
+    // 5. ElRow cw == 0 ElText must NOT emit "..." OP_TEXT
+    let zeroTextDl = drawListNew();
+    let zeroTextRow: Element RootMsg = col([fillSpace()], [row([wFixed(60.0), gap(8.0)], [
+        textAligned(fontSans(14.0, 400), AlignLeft, th.thInk, "ShouldNotDrawEllipsis"),
+        box([wFixed(60.0), hFixed(24.0)], button(th, "full-btn", "Full", Some(TopClicked)))
+    ])]);
+    let _ = renderUiRoot(zeroTextRow, mkCtx(), zeroTextDl);
+    // Expected DrawList cmds: OP_CLEAR_BG(1) + button rect(1) + button text "Full"(1) = 3 (no extra OP_TEXT "...")
+    assertTrue("ElRow cw==0 ElText emits no ellipsis OP_TEXT", dlStrCount(zeroTextDl) == 1 && dlStrAt(zeroTextDl, 0) == "Full")?;
+
+    // 6. ElParagraph shrunk in ElRow re-measures height for wrapped lines
+    let paraRow: Element RootMsg = col([fillSpace()], [row([wFixed(200.0), gap(8.0)], [
+        paragraph(fontSans(14.0, 400), 20.0, th.thInk, "Alpha Beta Gamma Delta Epsilon Zeta"),
+        box([wFixed(90.0), hFixed(24.0)], button(th, "p-tag", "Tag", Some(TopClicked)))
+    ])]);
+    let (_, paraRowH) = measureElement(paraRow, 200.0, 200.0);
+    assertTrue("ElRow re-measures shrunk ElParagraph wrapped height (>= 40px)", paraRowH >= 40.0)?;
+
+    // 7. ElWrapRow with leading zero-width spacer(0.0, 20.0) & AlignEnd
+    let spacerWrap: Element RootMsg = col([fillSpace()], [wrapRow([wFixed(180.0), gap(8.0), alignX(AlignEnd)], 6.0, [
+        spacer(0.0, 20.0),
+        button(th, "sp-chip", "TagA", Some(TopClicked))
+    ])]);
+    let outSpacerWrap = renderUiRoot(spacerWrap, mkCtx(), drawListNew());
+    let spOk = match findHitRect(outSpacerWrap.urHits, "sp-chip") {
+        Some(sr) -> absFloat((sr.rx + sr.rw) - 180.0) < 1.0,
+        None -> false,
+    };
+    assertTrue("ElWrapRow leading zero-width spacer still aligns trailing chip to x=180", spOk)?;
+
+    // 8. ElBox(ElParagraph) in ElRow: measureElement must use rowShrinkTier (tier=0) and wrap >= 3 lines
+    let boxParaRow: Element RootMsg = col([fillSpace()], [row([wFixed(200.0), gap(8.0)], [
+        box([], paragraph(fontSans(14.0, 400), 20.0, th.thInk, "Alpha Beta Gamma Delta Epsilon Zeta")),
+        button(th, "c-btn", "ConfirmButton", Some(TopClicked))
+    ])]);
+    let (_, boxParaH) = measureElement(boxParaRow, 200.0, 200.0);
+    assertTrue("ElRow measures shrunk ElBox(ElParagraph) to >= 3 wrapped lines (>= 60px)", boxParaH >= 60.0)?;
+
+    // 9. 3-tier shrink priority: overflowing adaptive ElCol (tier=1) must NOT crush wFixed(64.0) (tier=2)
+    let colVsFixedRow: Element RootMsg = col([fillSpace()], [row([wFixed(220.0), gap(8.0)], [
+        col([gap(2.0)], [
+            button(th, "l1", "VeryLongAdaptiveLabelOne", None),
+            button(th, "l2", "VeryLongAdaptiveLabelTwo", None)
+        ]),
+        box([wFixed(64.0), hFixed(28.0)], button(th, "buy-btn", "Buy", Some(TopClicked)))
+    ])]);
+    let outColVsFixed = renderUiRoot(colVsFixedRow, mkCtx(), drawListNew());
+    let buyOk = match findHitRect(outColVsFixed.urHits, "buy-btn") {
+        Some(br) -> br.rx >= 220.0 - 64.0 - 0.1 && br.rx + br.rw <= 220.01,
+        None -> false,
+    };
+    assertTrue("ElRow protects wFixed(64.0) (tier=2) from overflowing adaptive ElCol (tier=1)", buyOk)?;
+
+    printLn("  [PASS] crema.ui: ElWrapRow AlignMid/AlignEnd & ElRow overflow shrink protection");
+    Ok(())
+}
+
 def testStageLayer(): Result Void String = {
     let vp = rect(20.0, 30.0, 960.0, 540.0);
     let cam = cameraZoomBy(cameraPan(cameraNew(0.0, 0.0, 1.0), 45.0, -30.0), 1.35);
@@ -251,12 +402,67 @@ def testDirtyDrivenAppRuntime(): Result Void String = {
     Ok(())
 }
 
+def testDefaultRealtimeAppRuntime(): Result Void String = {
+    let th = themeLight();
+    let cfg: AppConfig Int CounterAppMsg = realtimeGameApp(
+        th,
+        (_vp) -> (0, CmdNone),
+        (_m: CounterAppMsg, c: Int) -> (c, CmdNone),
+        (_dt: Float, _vp: Rect, c: Int) -> (c, CmdNone),
+        (_vp, c) -> col([fillSpace()], [button(th, "b", intToStr(c), None)])
+    );
+    let rtDefault = runtimeCreate(cfg, 320.0, 240.0, headlessHost());
+    assertTrue("realtimeGameApp frame 1 renders", rtStepFrame(rtDefault, 16.6, 320.0, 240.0))?;
+    assertTrue("realtimeGameApp frame 2 still redraws by default", rtStepFrame(rtDefault, 16.6, 320.0, 240.0))?;
+    Ok(())
+}
+
+def testIdleTickOptInRuntime(): Result Void String = {
+    let th = themeLight();
+    let tickCount = cellNew(0);
+    let wantRedraw = cellNew(false);
+    let cfg: AppConfig Int CounterAppMsg = realtimeGameApp(
+        th,
+        (_vp) -> (0, CmdNone),
+        (_m: CounterAppMsg, c: Int) -> (c, CmdNone),
+        (_dt: Float, _vp: Rect, count: Int) -> {
+            cellSet(tickCount, cellGet(tickCount) + 1);
+            if (cellGet(wantRedraw)) {
+                cellSet(wantRedraw, false);
+                (count + 1, cmdRedraw())
+            } else (count, CmdNone)
+        },
+        (_vp, c) -> col([fillSpace()], [button(th, "b", intToStr(c), None)])
+    );
+
+    cellSet(tickCount, 0);
+    let rt = runtimeCreate(cfg, 320.0, 240.0, headlessHost());
+    rtSetTickAutoDirty(rt, false);
+    assertTrue("Idle-tick frame 1 renders initial dirty state", rtStepFrame(rt, 16.6, 320.0, 240.0))?;
+    assertTrue("Idle-tick frame 2 skips redraw when idle", !rtStepFrame(rt, 16.6, 320.0, 240.0))?;
+    assertTrue("tickFn still ran on idle frame", cellGet(tickCount) == 2)?;
+
+    cellSet(wantRedraw, true);
+    assertTrue("Idle-tick frame 3 redraws when tick emits CmdRedraw", rtStepFrame(rt, 16.6, 320.0, 240.0))?;
+    assertTrue("Model updated on CmdRedraw tick", rtModel(rt) == 1)?;
+    assertTrue("Idle-tick frame 4 returns to 0% idle redraw", !rtStepFrame(rt, 16.6, 320.0, 240.0))?;
+
+    rtMarkDirty(rt);
+    assertTrue("Idle-tick frame 5 redraws after explicit rtMarkDirty", rtStepFrame(rt, 16.6, 320.0, 240.0))?;
+
+    printLn("  [PASS] crema.app: opt-in idle tick skips redundant redraws & supports CmdRedraw / rtMarkDirty");
+    Ok(())
+}
+
 def runAll(): Result Void String = {
     printLn("Running Crema framework verification suite...");
     testGfxLayer()?;
     testUiLayoutAndFunctor()?;
+    testWrapRowAlignmentAndRowOverflow()?;
     testStageLayer()?;
     testDirtyDrivenAppRuntime()?;
+    testDefaultRealtimeAppRuntime()?;
+    testIdleTickOptInRuntime()?;
     printLn("All Crema framework unit & layout suites passed!");
     Ok(())
 }

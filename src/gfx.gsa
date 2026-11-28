@@ -287,6 +287,8 @@ pub def truncateWithEllipsis(font: FontSpec, maxW: Float, s: String): String =
     else if (measureTextWidth(font, s) <= maxW) s
     else {
         let ellW = font.fsSize * 0.85;
+        if (maxW < ellW) ""
+        else {
         let budget = maxFloat(0.0, maxW - ellW);
         let isMono = match font.fsFamily { FontMono -> true, _ -> false };
         let n = strLen(s);
@@ -304,6 +306,7 @@ pub def truncateWithEllipsis(font: FontSpec, maxW: Float, s: String): String =
             }
         };
         strSlice(s, 0, cellGet(cur)) + "…"
+        }
     }
 
 def isCjkNoBreakStart(cp: Int): Bool =

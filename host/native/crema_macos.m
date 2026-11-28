@@ -98,8 +98,8 @@ void crema_host_set_cursor(const char *cursor) {
     else [[NSCursor arrowCursor] set];
 }
 
-void crema_host_focus_ime(const char *inp_id, const char *val, double x, double y, double w, double h) {
-    (void)inp_id; (void)val; (void)x; (void)y; (void)w; (void)h;
+void crema_host_focus_ime(const char *inp_id, const char *val, double x, double y, double w, double h, double pad_x) {
+    (void)inp_id; (void)val; (void)x; (void)y; (void)w; (void)h; (void)pad_x;
 }
 
 void crema_host_blur_ime(void) {}

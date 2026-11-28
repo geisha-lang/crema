@@ -42,6 +42,8 @@ export async function mountCremaApp(options = {}) {
   let cssH = Math.max(220, canvas.clientHeight || window.innerHeight);
   let layoutH = cssH;
   let dpr = Math.min(2.0, window.devicePixelRatio || 1);
+  let lastDrawSnap = null;
+  let snapImeId = "";
 
   function syncCanvasSize() {
     cssW = Math.max(320, canvas.clientWidth || window.innerWidth);
@@ -56,6 +58,7 @@ export async function mountCremaApp(options = {}) {
     if (canvas.width !== pw || canvas.height !== ph) {
       canvas.width = pw;
       canvas.height = ph;
+      if (lastDrawSnap) repaintCachedFrame();
     }
   }
   function syncVisualViewport() {
@@ -92,9 +95,17 @@ export async function mountCremaApp(options = {}) {
   let activeImeId = "";
   let lastImeKey = "none";
   let lastCaretActivityMs = 0;
-  let lastDrawSnap = null;
+  let lastRenderedBlinkOn = true;
+  let lastImeRender = null;
+  let pendingClickX = null;
+  let pendingFocusClick = null;
+  let blurringFromHost = false;
+  let isComposing = false;
+  let lastDispatchedImeVal = "";
   let frameCount = 0;
   let presentCount = 0;
+
+  const computeBlinkOn = (now) => (now - lastCaretActivityMs < 480) || (Math.floor(now / 530) % 2 === 0);
 
   function readStr(ptr) {
     const p = ptr >>> 0;
@@ -159,8 +170,33 @@ export async function mountCremaApp(options = {}) {
     }
   }
 
-  function renderDrawListArrays(i32, f64, wordCount, getStr) {
+  function caretIndexFromX(text, clickX, boxX, padX, scrollX, fontStr) {
+    if (!text || text.length === 0) return 0;
+    const ix = boxX + padX;
+    const relX = clickX - ix + (scrollX || 0);
+    if (relX <= 0) return 0;
+    ctx.save();
+    if (fontStr) ctx.font = fontStr;
+    let prevW = 0;
+    let i = 0;
+    while (i < text.length) {
+      const code = text.charCodeAt(i);
+      const cpLen = (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length) ? 2 : 1;
+      const nextW = ctx.measureText(text.slice(0, i + cpLen)).width;
+      if (relX < (prevW + nextW) * 0.5) {
+        ctx.restore();
+        return i;
+      }
+      prevW = nextW;
+      i += cpLen;
+    }
+    ctx.restore();
+    return text.length;
+  }
+
+  function renderDrawListArrays(i32, f64, wordCount, getStr, isCachedRepaint = false) {
     let frameIme = null;
+    let seenImeId = "";
     ctx.save();
     ctx.scale(dpr, dpr);
 
@@ -426,12 +462,41 @@ export async function mountCremaApp(options = {}) {
           const weight = Math.max(100, Math.min(900, (styleBits & 255) * 100));
           const fam = famCode === 1 ? fonts.serif : famCode === 2 ? fonts.mono : fonts.sans;
 
-          const liveVal = (imeInput && document.activeElement === imeInput && activeImeId === id && imeInput.value !== undefined)
-            ? imeInput.value
-            : val;
+          seenImeId = id;
+          const hasDomFocus = !!(imeInput && document.activeElement === imeInput && activeImeId === id);
+          let liveVal = val;
+          if (hasDomFocus && imeInput.value !== undefined) {
+            if (!isCachedRepaint && !isComposing && val !== lastDispatchedImeVal) {
+              const prevLen = imeInput.value.length;
+              const prevEnd = typeof imeInput.selectionEnd === "number" ? imeInput.selectionEnd : prevLen;
+              const nextPos = prevEnd >= prevLen ? val.length : Math.min(val.length, prevEnd);
+              imeInput.value = val;
+              lastDispatchedImeVal = val;
+              try { imeInput.setSelectionRange(nextPos, nextPos); } catch (_) {}
+            }
+            liveVal = imeInput.value;
+          }
+          let selStart = liveVal.length;
+          let selEnd = liveVal.length;
           let caretIdx = liveVal.length;
-          if (imeInput && document.activeElement === imeInput && activeImeId === id && typeof imeInput.selectionStart === "number") {
-            caretIdx = Math.max(0, Math.min(liveVal.length, imeInput.selectionStart));
+          if (hasDomFocus && typeof imeInput.selectionStart === "number") {
+            selStart = Math.max(0, Math.min(liveVal.length, imeInput.selectionStart));
+            selEnd = typeof imeInput.selectionEnd === "number"
+              ? Math.max(selStart, Math.min(liveVal.length, imeInput.selectionEnd))
+              : selStart;
+            caretIdx = imeInput.selectionDirection === "backward" ? selStart : selEnd;
+          }
+
+          const fontStr = `${weight} ${sz}px ${fam}`;
+          if (pendingFocusClick && pendingFocusClick.id === id && hasDomFocus) {
+            if (selStart === selEnd) {
+              const snapped = caretIndexFromX(liveVal, pendingFocusClick.x, bx, padX, pendingFocusClick.scrollX || 0, fontStr);
+              try { imeInput.setSelectionRange(snapped, snapped); } catch (_) {}
+              selStart = snapped;
+              selEnd = snapped;
+              caretIdx = snapped;
+            }
+            pendingFocusClick = null;
           }
 
           const ix = bx + padX;
@@ -442,11 +507,22 @@ export async function mountCremaApp(options = {}) {
           ctx.beginPath();
           ctx.rect(ix - 1, by + 2, iw + 2, Math.max(0, bh - 4));
           ctx.clip();
-          ctx.font = `${weight} ${sz}px ${fam}`;
+          ctx.font = fontStr;
           ctx.textAlign = "left";
 
           const prefixW = caretIdx > 0 ? ctx.measureText(liveVal.slice(0, caretIdx)).width : 0;
           const scrollX = prefixW > iw - 4 ? prefixW - (iw - 4) : 0;
+
+          if (selEnd > selStart && liveVal.length > 0) {
+            const selStartW = selStart > 0 ? ctx.measureText(liveVal.slice(0, selStart)).width : 0;
+            const selEndW = selEnd > 0 ? ctx.measureText(liveVal.slice(0, selEnd)).width : 0;
+            const sx = ix + selStartW - scrollX;
+            const sw = Math.max(2, selEndW - selStartW);
+            const sh = sz * 1.24;
+            const sy = by + (bh - sh) * 0.5;
+            ctx.fillStyle = "rgba(59, 130, 246, 0.28)";
+            ctx.fillRect(sx, sy, sw, sh);
+          }
 
           if (liveVal.length === 0) {
             if (ph) {
@@ -459,8 +535,9 @@ export async function mountCremaApp(options = {}) {
           }
 
           const now = performance.now();
-          const blinkOn = (now - lastCaretActivityMs < 480) || (Math.floor(now / 530) % 2 === 0);
-          if (blinkOn && caretCol !== 0) {
+          const blinkOn = computeBlinkOn(now);
+          lastRenderedBlinkOn = blinkOn;
+          if (blinkOn && caretCol !== 0 && selStart === selEnd) {
             const padAfter = caretIdx >= liveVal.length && liveVal.length > 0 ? 1.0 : 0.0;
             const cx = ix + prefixW - scrollX + padAfter;
             const ch = sz * 1.18;
@@ -472,12 +549,14 @@ export async function mountCremaApp(options = {}) {
           }
           ctx.restore();
 
+          lastImeRender = { id, val: liveVal, bx, by, bw, bh, padX, scrollX, font: fontStr };
           frameIme = { id, val: liveVal, x: bx, y: by, w: bw, h: bh, padX };
           w += 10;
           break;
         }
         case 15: { // OP_IME_CLEAR (1 word)
           frameIme = null;
+          seenImeId = "";
           w += 1;
           break;
         }
@@ -498,6 +577,7 @@ export async function mountCremaApp(options = {}) {
 
     ctx.restore();
     syncImeBox(frameIme);
+    return seenImeId;
   }
 
   function executeBinaryDrawList(wordsPtr, wordCount, strsPtr, strCount) {
@@ -519,16 +599,18 @@ export async function mountCremaApp(options = {}) {
       wordCount,
       strs,
     };
-    renderDrawListArrays(i32View, f64View, wordCount, (idx) => (idx >= 0 && idx < strCount ? strs[idx] : ""));
+    snapImeId = renderDrawListArrays(i32View, f64View, wordCount, (idx) => (idx >= 0 && idx < strCount ? strs[idx] : ""), false);
   }
 
   function repaintCachedFrame() {
     if (!lastDrawSnap) return;
+    if (activeImeId && snapImeId !== activeImeId) return;
     renderDrawListArrays(
       lastDrawSnap.i32,
       lastDrawSnap.f64,
       lastDrawSnap.wordCount,
-      (idx) => (idx >= 0 && idx < lastDrawSnap.strs.length ? lastDrawSnap.strs[idx] : "")
+      (idx) => (idx >= 0 && idx < lastDrawSnap.strs.length ? lastDrawSnap.strs[idx] : ""),
+      true
     );
   }
 
@@ -548,21 +630,45 @@ export async function mountCremaApp(options = {}) {
       },
       crema_host_present: executeBinaryDrawList,
       crema_host_set_cursor: (curPtr) => { canvas.style.cursor = readStr(curPtr) || "default"; },
-      crema_host_focus_ime: (idPtr, valPtr, x, y, w, h) => {
+      crema_host_focus_ime: (idPtr, valPtr, x, y, w, h, padX) => {
         const id = readStr(idPtr);
         const val = readStr(valPtr);
+        const effPadX = Number.isFinite(padX) ? padX : 8;
         activeImeId = id;
+        lastDispatchedImeVal = val;
         lastCaretActivityMs = performance.now();
-        syncImeBox({ id, val, x, y, w, h, padX: 10 });
+        syncImeBox({ id, val, x, y, w, h, padX: effPadX });
         if (imeInput) {
           imeInput.value = val;
           imeInput.focus({ preventScroll: true });
-          try { imeInput.setSelectionRange(val.length, val.length); } catch (_) {}
+          let caretPos = val.length;
+          if (pendingClickX !== null) {
+            const fontStr = (lastImeRender && lastImeRender.id === id)
+              ? lastImeRender.font
+              : `400 14px ${fonts.sans}`;
+            const scrollX = (lastImeRender && lastImeRender.id === id) ? lastImeRender.scrollX : 0;
+            caretPos = caretIndexFromX(val, pendingClickX, x, effPadX, scrollX, fontStr);
+            pendingFocusClick = { id, x: pendingClickX, scrollX };
+          }
+          try { imeInput.setSelectionRange(caretPos, caretPos); } catch (_) {}
         }
       },
       crema_host_blur_ime: () => {
+        const wasFocused = !!(imeInput && document.activeElement === imeInput);
         activeImeId = "";
-        if (imeInput && document.activeElement === imeInput) imeInput.blur();
+        isComposing = false;
+        lastDispatchedImeVal = "";
+        pendingClickX = null;
+        pendingFocusClick = null;
+        lastImeRender = null;
+        syncImeBox(null);
+        if (imeInput) {
+          try { imeInput.setSelectionRange(0, 0); } catch (_) {}
+          if (wasFocused) {
+            blurringFromHost = true;
+            try { imeInput.blur(); } finally { blurringFromHost = false; }
+          }
+        }
       },
       ...(options.extraImports ? options.extraImports({ readStr, writeStr, invokeWasm, getExports: () => wasmExports }) : {}),
     },
@@ -621,7 +727,12 @@ export async function mountCremaApp(options = {}) {
     dragMoved = false;
     if (wasTap && e.button <= 0) {
       const { x, y } = rectOffset(e);
-      if (wasmExports.crema_pointer_click) invokeWasm(() => wasmExports.crema_pointer_click(x, y));
+      pendingClickX = x;
+      try {
+        if (wasmExports.crema_pointer_click) invokeWasm(() => wasmExports.crema_pointer_click(x, y));
+      } finally {
+        pendingClickX = null;
+      }
       if (activeImeId && imeInput) {
         imeInput.focus({ preventScroll: true });
       }
@@ -645,7 +756,9 @@ export async function mountCremaApp(options = {}) {
 
   if (imeInput) {
     const syncText = () => {
+      pendingFocusClick = null;
       lastCaretActivityMs = performance.now();
+      lastDispatchedImeVal = imeInput.value;
       if (activeImeId && wasmExports.crema_text_input) {
         invokeWasm(() => wasmExports.crema_text_input(writeStr(activeImeId), writeStr(imeInput.value)));
       }
@@ -658,24 +771,84 @@ export async function mountCremaApp(options = {}) {
       }
     };
     imeInput.addEventListener("input", syncText);
+    imeInput.addEventListener("compositionstart", () => {
+      isComposing = true;
+      pendingFocusClick = null;
+    });
     imeInput.addEventListener("compositionupdate", syncText);
-    imeInput.addEventListener("compositionend", syncText);
+    imeInput.addEventListener("compositionend", () => {
+      isComposing = false;
+      syncText();
+    });
     imeInput.addEventListener("keyup", syncSelectionOnly);
-    imeInput.addEventListener("mouseup", syncSelectionOnly);
+    let imeDownX = 0, imeDownY = 0;
+    imeInput.addEventListener("pointerdown", (ev) => {
+      imeDownX = ev.clientX;
+      imeDownY = ev.clientY;
+    });
+    imeInput.addEventListener("mouseup", (ev) => {
+      if (
+        !isComposing &&
+        activeImeId &&
+        document.activeElement === imeInput &&
+        lastImeRender &&
+        lastImeRender.id === activeImeId &&
+        (ev.detail || 1) <= 1 &&
+        Math.hypot(ev.clientX - imeDownX, ev.clientY - imeDownY) <= 4
+      ) {
+        const r = canvas.getBoundingClientRect();
+        const clickX = ev.clientX - r.left;
+        const idx = caretIndexFromX(
+          imeInput.value,
+          clickX,
+          lastImeRender.bx,
+          lastImeRender.padX,
+          lastImeRender.scrollX,
+          lastImeRender.font
+        );
+        try { imeInput.setSelectionRange(idx, idx); } catch (_) {}
+      }
+      syncSelectionOnly();
+    });
     imeInput.addEventListener("touchend", syncSelectionOnly);
     document.addEventListener("selectionchange", syncSelectionOnly);
     imeInput.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter" && !ev.isComposing && activeImeId && wasmExports.crema_text_submit) {
+      const composing = isComposing || ev.isComposing || ev.keyCode === 229;
+      if (
+        !composing &&
+        !ev.metaKey &&
+        !ev.ctrlKey &&
+        !ev.altKey &&
+        (ev.key.length === 1 ||
+          ev.key === "Backspace" ||
+          ev.key === "Delete" ||
+          ev.key === "ArrowLeft" ||
+          ev.key === "ArrowRight" ||
+          ev.key === "Home" ||
+          ev.key === "End")
+      ) {
+        pendingFocusClick = null;
+      }
+      if (ev.key === "Enter" && !composing && activeImeId && wasmExports.crema_text_submit) {
         ev.preventDefault();
         invokeWasm(() => wasmExports.crema_text_submit(writeStr(activeImeId)));
-      } else if (ev.key === "Escape") {
+      } else if (ev.key === "Escape" && !composing) {
         ev.preventDefault();
         imeInput.blur();
       }
     });
     imeInput.addEventListener("blur", () => {
       activeImeId = "";
-      if (wasmExports.crema_blur_input) invokeWasm(() => wasmExports.crema_blur_input());
+      isComposing = false;
+      lastDispatchedImeVal = "";
+      pendingClickX = null;
+      pendingFocusClick = null;
+      lastImeRender = null;
+      syncImeBox(null);
+      try { imeInput.setSelectionRange(0, 0); } catch (_) {}
+      if (!blurringFromHost && wasmExports.crema_blur_input) {
+        invokeWasm(() => wasmExports.crema_blur_input());
+      }
     });
   }
 
@@ -685,7 +858,13 @@ export async function mountCremaApp(options = {}) {
     lastTs = ts;
     if (!document.hidden && wasmExports.crema_step_frame) {
       frameCount++;
-      invokeWasm(() => wasmExports.crema_step_frame(dt, cssW, layoutH));
+      const rendered = invokeWasm(() => wasmExports.crema_step_frame(dt, cssW, layoutH));
+      if (!rendered && activeImeId && imeInput && document.activeElement === imeInput && lastDrawSnap) {
+        const blinkOn = computeBlinkOn(performance.now());
+        if (blinkOn !== lastRenderedBlinkOn) {
+          repaintCachedFrame();
+        }
+      }
       if (options.onAfterFrame) options.onAfterFrame();
     }
     requestAnimationFrame(loop);
